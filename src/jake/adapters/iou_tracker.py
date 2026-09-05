@@ -5,7 +5,7 @@ from datetime import datetime
 
 from jake.config import TrackingConfig
 from jake.domain import BoundingBox, FrameContext, PersonDetection, PersonTrack
-from jake.matching import greedy_iou_assignment
+from jake.matching import assign_boxes
 
 
 class TrackerError(ValueError):
@@ -51,10 +51,11 @@ class IoUPersonTracker:
                 raise TrackerError("tracker frame sequences must be strictly increasing")
 
         matches = dict(
-            greedy_iou_assignment(
+            assign_boxes(
                 tuple(track.box for track in self._tracks),
                 tuple(detection.box for detection in detections),
                 self._config.min_iou,
+                self._config.assignment,
             )
         )
         used_detections = set(matches.values())

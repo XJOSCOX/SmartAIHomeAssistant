@@ -67,6 +67,15 @@ def preview(
                         )
                         draw_people(display, tracks)
                         if track_diagnostics is not None:
+                            cv2.putText(
+                                display,
+                                f"assignment {config.tracking.assignment}",
+                                (10, 100),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                0.5,
+                                (0, 165, 255),
+                                1,
+                            )
                             draw_track_diagnostics(display, track_diagnostics())
                         cv2.putText(
                             display,
@@ -132,7 +141,7 @@ def draw_track_diagnostics(
         cv2.putText(
             display,
             f"ID {item.track_id} | missed {item.missed_frames}",
-            (10, 105 + index * 20),
+            (10, 125 + index * 20),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.5,
             (0, 165, 255),

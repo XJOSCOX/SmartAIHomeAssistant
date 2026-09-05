@@ -3,6 +3,7 @@
 from collections.abc import Sequence
 
 from jake.domain import BoundingBox
+from jake.hungarian import AssignmentError, linear_assignment
 
 
 def intersection_over_union(first: BoundingBox, second: BoundingBox) -> float:
@@ -28,7 +29,7 @@ def greedy_iou_assignment(
     scores prefer lower track index, then lower detection index. The tracker
     provides tracks in creation order, so this is deterministic for ordered input.
     O(T*D) candidates, O((T*D) log(T*D)) worst-case sorting, O(T*D) space.
-    This function can be replaced independently with a future Hungarian solver.
+    This baseline remains independent of the Hungarian strategy below.
     """
     candidates = []
     for track_index, track in enumerate(tracks):
@@ -46,3 +47,47 @@ def greedy_iou_assignment(
             assigned_detections.add(detection_index)
             matches.append((track_index, detection_index))
     return tuple(matches)
+
+
+def hungarian_iou_assignment(
+    tracks: Sequence[BoundingBox], detections: Sequence[BoundingBox], min_iou: float
+) -> tuple[tuple[int, int], ...]:
+    """Maximize valid match count, then minimize total 1-IoU cost.
+
+    T+D square nodes include explicit unmatched choices for both sides. Valid
+    costs are <=1; unmatched penalty min(T,D)+1 prioritizes cardinality above
+    any possible change in total valid cost. Forbidden pairs cost more than the
+    entire all-unmatched solution. O((T+D)^3) time, O((T+D)^2) space.
+    """
+    if not tracks or not detections:
+        return ()
+    track_count, detection_count = len(tracks), len(detections)
+    size = track_count + detection_count
+    penalty = float(min(track_count, detection_count) + 1)
+    forbidden = (size + 1) * 2 * penalty
+    scores = [[intersection_over_union(t, d) for d in detections] for t in tracks]
+    costs = [[0.0] * size for _ in range(size)]
+    for i in range(size):
+        for j in range(size):
+            if i < track_count and j < detection_count:
+                costs[i][j] = 1 - scores[i][j] if scores[i][j] >= min_iou else forbidden
+            elif i < track_count or j < detection_count:
+                costs[i][j] = penalty
+    return tuple(
+        (i, j)
+        for i, j in linear_assignment(costs)
+        if i < track_count and j < detection_count and scores[i][j] >= min_iou
+    )
+
+
+def assign_boxes(
+    tracks: Sequence[BoundingBox],
+    detections: Sequence[BoundingBox],
+    min_iou: float,
+    strategy: str,
+) -> tuple[tuple[int, int], ...]:
+    if strategy == "greedy":
+        return greedy_iou_assignment(tracks, detections, min_iou)
+    if strategy == "hungarian":
+        return hungarian_iou_assignment(tracks, detections, min_iou)
+    raise AssignmentError(f"unknown assignment strategy: {strategy}")

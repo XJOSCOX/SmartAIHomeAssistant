@@ -182,6 +182,9 @@ to another person; an edge-clamped prediction may match an unrelated edge detect
 
 Greedy association is unchanged: O(T×D) candidate generation and worst-case
 O((T×D) log(T×D)) sorting, with O(T×D) candidate memory. Fixed 8×8 filter operations
-add O(T) work and state. Phase 1E will introduce Hungarian/global assignment.
+add O(T) work and state. Phase 1E now provides selectable
+[Hungarian/global assignment](global-assignment.md); use `--assignment greedy`
+to reproduce the Phase 1D association baseline, or `--assignment hungarian`
+for the new strategy. Its different complexity and gating policy are documented there.
 Appearance embeddings and identity recognition are outside this phase. Track IDs
 remain session-local, with no network calls or image/database persistence.

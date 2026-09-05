@@ -2,8 +2,8 @@
 
 Jake is the foundation for a privacy-first, local-first smart home AI system.
 The intended system will understand household events locally and eventually
-support natural conversation. **Phase 1D adds Jake-owned NumPy Kalman motion
-prediction to multi-person tracking. The IoU baseline remains available; track
+support natural conversation. **Phase 1E adds Jake-owned Hungarian global
+assignment to Kalman tracking. Greedy and IoU baselines remain available; track
 IDs are session-local, not resident identities.**
 
 ## Phase 1 scope
@@ -313,8 +313,9 @@ period preserves IDs longer but can keep stale tracks alive; raising the IoU
 threshold rejects weak matches but can fragment tracks. Greedy assignment is
 deterministic, not globally optimal.
 
-Phase 1D adds Kalman prediction/correction behind the same protocol, while keeping
-greedy assignment. Hungarian/global assignment is planned for **Phase 1E**.
+Phase 1D adds Kalman prediction/correction behind the same protocol. Phase 1E
+adds selectable Hungarian/global assignment; use `--assignment greedy` to retain
+the original association baseline.
 
 ## Phase 1D: Kalman-assisted tracking
 
@@ -329,7 +330,8 @@ uv run --extra detection jake-camera --config config/local.toml --track --tracke
 `--track --tracker iou` (or just `--track`) keeps the original baseline. Normal
 labels and controls are unchanged. Add `--debug-tracks` with the Kalman tracker
 to show predicted/measurement boxes plus per-track ID and missed count. No
-OpenCV KalmanFilter, YOLO tracking, or Hungarian assignment is used.
+OpenCV KalmanFilter or YOLO tracking is used. Assignment is now selectable;
+use `--assignment greedy` for the Phase 1D baseline.
 
 Each track estimates `[cx, cy, w, h, vx, vy, vw, vh]` in normalized coordinates,
 predicts forward before greedy IoU matching, and corrects from matched detections.
@@ -363,8 +365,43 @@ uv run --extra tracking python -m jake.benchmarks
 On two uninterrupted trajectories both trackers create two IDs with no switches.
 With a three-frame occlusion, the IoU baseline creates three IDs with one change;
 Kalman keeps two IDs with no changes. This is a synthetic regression comparison,
-not proof of real-world crossing accuracy. The new Kalman path still requires
-physical validation with your webcam.
+not proof of real-world crossing accuracy. Phase 1D has now been physically
+validated and works on the user's webcam.
+
+## Phase 1E: global assignment
+
+Jake's Hungarian solver assigns tracks and detections globally using gated
+`1 - IoU` costs. It supports rectangular and empty inputs and explicit unmatched
+choices, so below-threshold pairs cannot be forced together. It uses neither
+SciPy's solver nor model-provided tracking. Greedy remains selectable.
+
+```sh
+uv run --extra detection jake-camera --config config/local.toml --track --tracker kalman --assignment hungarian
+```
+
+Set `assignment = "hungarian"` under your existing `[tracking]` table to select it
+without the CLI flag. CLI selection overrides the file without changing it.
+Omitted settings preserve `greedy` for backwards compatibility; the example file
+explicitly selects Hungarian. Use `--assignment greedy` to reproduce Phase 1C/1D
+baselines even when your file selects Hungarian. In `--debug-tracks` mode, the
+preview displays the selected strategy. Normal labels and exit controls remain.
+
+The global objective maximizes valid match count, then minimizes total IoU cost.
+It uses dummy unmatched nodes and forbidden costs above the all-unmatched solution.
+Hungarian complexity is approximately O(n³) time and O(n²) space, with n=T+D for
+the gated tracking matrix. It costs more than greedy, and cannot guarantee fewer
+ID switches when geometry is ambiguous. Track IDs remain session-local.
+
+`uv run --extra tracking python -m jake.benchmarks` now compares Kalman + greedy
+and Kalman + Hungarian on deterministic crossing trajectories, reporting total
+IDs, switches, and assignment time separately from filter/inference work. Smooth
+crossings yield 2 IDs/0 switches for both; the jittered crossing yields 2 IDs/4
+switches for both. A gated-bottleneck regression demonstrates a case where global
+matching preserves two connections while greedy creates a third ID.
+
+See [global assignment design](docs/global-assignment.md) for the algorithm,
+penalty policy, complexity, evaluation method, and limitations. Phase 1E still
+requires physical validation; no appearance or identity recognition is added.
 
 ## Repository layout
 
@@ -382,7 +419,8 @@ src/jake/
   kalman.py       Reusable NumPy linear Kalman mathematics
   motion.py       Constant-velocity box model and dt policy
   benchmarks.py   Deterministic synthetic tracker comparison
-  matching.py     Pure IoU geometry and deterministic greedy assignment
+  matching.py     IoU geometry, strategy selection, and gated global matching
+  hungarian.py    Jake-owned rectangular linear assignment solver
   diagnostics.py  Framework-independent detector timing
   preview.py      Local OpenCV display and development overlay
   cli.py          jake-camera entry point
@@ -490,18 +528,19 @@ are ignored by Git; ignore rules are not an access-control mechanism.
 
 ## Roadmap
 
-The Phase 1 foundation, 1A acquisition, 1B detection, 1C IoU tracking, and 1D
-Kalman-assisted tracking are implemented.
+The Phase 1 foundation, 1A acquisition, 1B detection, 1C IoU tracking, 1D
+Kalman-assisted tracking, and 1E global assignment are implemented.
 Phase 1A was physically validated on Windows at approximately 19 FPS, 640×480,
 with advancing sequences and successful shutdown. Phase 1B was also physically
 validated with multiple people and CPU inference fast enough for development.
 Phase 1C has been physically validated with multiple people; crossing/occlusion
-ID losses establish the baseline. Phase 1D requires physical validation. The sequence below is a planning
+ID losses establish the baseline. Phase 1D has been physically validated and works.
+Phase 1E global assignment is implemented and awaits physical validation. The sequence below is a planning
 outline, not a promise that later phases already exist.
 
 | Phase | Planned capabilities |
 | --- | --- |
-| 1 — perception | Foundation, 1A acquisition, 1B detection, 1C IoU tracking, and 1D Kalman motion prediction complete; 1E Hungarian/global assignment and event-generation algorithms remain future work |
+| 1 — perception | Foundation through 1E Hungarian/global assignment complete; event-generation algorithms remain future work |
 | 2 — recognition | Resident recognition, frequent visitor recognition, delivery/visitor classification, with consent and identity-data controls |
 | 3 — understanding and memory | Activity recognition, event memory, household behavioral learning, anomaly detection, and governed continual learning |
 | 4 — voice and interaction | Speech recognition, text-to-speech, basic conversational AI, context-aware resident greetings, and daily/event summaries |

@@ -15,6 +15,7 @@ image_size = 640
 # Uses pipeline.min_person_confidence as the single confidence threshold.
 
 [tracking]
+assignment = "hungarian"
 min_iou = 0.3
 max_missed_frames = 10
 

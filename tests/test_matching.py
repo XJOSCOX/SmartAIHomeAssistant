@@ -1,7 +1,12 @@
 import pytest
 
 from jake.domain import BoundingBox
-from jake.matching import greedy_iou_assignment, intersection_over_union
+from jake.matching import (
+    assign_boxes,
+    greedy_iou_assignment,
+    hungarian_iou_assignment,
+    intersection_over_union,
+)
 
 
 def test_exact_overlap() -> None:
@@ -44,3 +49,23 @@ def test_threshold_is_inclusive_and_empty_inputs_are_safe() -> None:
     assert greedy_iou_assignment((first,), (second,), 0.34) == ()
     assert greedy_iou_assignment((), (second,), 0.3) == ()
     assert greedy_iou_assignment((first,), (), 0.3) == ()
+
+
+def test_global_assignment_avoids_greedy_dead_end() -> None:
+    tracks = (BoundingBox(0.2, 0, 0.4, 1), BoundingBox(0.3, 0, 0.5, 1))
+    detections = (BoundingBox(0.22, 0, 0.42, 1), BoundingBox(0.1, 0, 0.3, 1))
+    assert greedy_iou_assignment(tracks, detections, 0.3) == ((0, 0),)
+    assert hungarian_iou_assignment(tracks, detections, 0.3) == ((0, 1), (1, 0))
+
+
+@pytest.mark.parametrize("strategy", ["greedy", "hungarian"])
+def test_assignment_gating_and_unmatched_cases(strategy: str) -> None:
+    left, right = BoundingBox(0, 0, 0.3, 1), BoundingBox(0.7, 0, 1, 1)
+    assert assign_boxes((left,), (right,), 0.3, strategy) == ()
+    assert assign_boxes((left, right), (left,), 1.0, strategy) == ((0, 0),)
+    assert assign_boxes((left,), (left, right), 1.0, strategy) == ((0, 0),)
+    assert assign_boxes((), (left,), 0.3, strategy) == ()
+    assert assign_boxes((left,), (), 0.3, strategy) == ()
+    assert assign_boxes((left, left), (right, right), 0.3, strategy) == ()
+    with pytest.raises(ValueError, match="unknown assignment"):
+        assign_boxes((left,), (right,), 0.3, "bad")

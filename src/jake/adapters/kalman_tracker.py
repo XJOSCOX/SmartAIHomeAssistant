@@ -1,7 +1,8 @@
-"""Jake-owned motion prediction and correction around the existing greedy matcher."""
+"""Jake-owned motion prediction and correction around a selectable matcher."""
 
 from dataclasses import dataclass, replace
 from datetime import datetime
+from time import perf_counter
 
 import numpy as np
 
@@ -9,8 +10,9 @@ from jake.adapters.iou_tracker import TrackerError
 from jake.config import TrackingConfig
 from jake.diagnostics import TrackDiagnostic
 from jake.domain import BoundingBox, FrameContext, PersonDetection, PersonTrack
+from jake.hungarian import AssignmentError
 from jake.kalman import KalmanError, KalmanFilter
-from jake.matching import greedy_iou_assignment
+from jake.matching import assign_boxes
 from jake.motion import (
     bounded_box,
     frame_dt,
@@ -38,7 +40,7 @@ class _MotionTrack:
 
 
 class KalmanPersonTracker:
-    """Session-local PersonTracker: predict → greedy IoU → correct → lifecycle.
+    """Session-local PersonTracker: predict → assignment → correct → lifecycle.
 
     Functional filter updates allow failed updates to leave all session state
     unchanged. Misses count processed updates as in Phase 1C, not elapsed time.
@@ -49,6 +51,12 @@ class KalmanPersonTracker:
         self._tracks: tuple[_MotionTrack, ...] = ()
         self._last_context: FrameContext | None = None
         self._next_id = 1
+        self._last_assignment_ms = 0.0
+
+    @property
+    def last_assignment_ms(self) -> float:
+        """Last successful cost construction + gating + assignment; excludes filter work."""
+        return self._last_assignment_ms
 
     def diagnostics(self) -> tuple[TrackDiagnostic, ...]:
         return tuple(
@@ -65,17 +73,18 @@ class KalmanPersonTracker:
             if context.sequence <= self._last_context.sequence:
                 raise TrackerError("tracker frame sequences must be strictly increasing")
         try:
-            tracks, next_id = self._advance(context, detections)
-        except (KalmanError, np.linalg.LinAlgError) as exc:
+            tracks, next_id, assignment_ms = self._advance(context, detections)
+        except (KalmanError, AssignmentError, np.linalg.LinAlgError) as exc:
             raise TrackerError(
                 "Kalman tracking update failed; session state was preserved"
             ) from exc
         self._tracks, self._next_id, self._last_context = tracks, next_id, context
+        self._last_assignment_ms = assignment_ms
         return tuple(PersonTrack(t.track_id, t.box, t.confidence) for t in tracks)
 
     def _advance(
         self, context: FrameContext, detections: tuple[PersonDetection, ...]
-    ) -> tuple[tuple[_MotionTrack, ...], int]:
+    ) -> tuple[tuple[_MotionTrack, ...], int, float]:
         noise = self._config.kalman
         dt = frame_dt(self._last_context, context)
         transition, process = transition_matrix(dt), process_noise(noise, dt)
@@ -93,13 +102,16 @@ class KalmanPersonTracker:
                     age_frames=track.age_frames + 1,
                 )
             )
+        assignment_start = perf_counter()
         matches = dict(
-            greedy_iou_assignment(
+            assign_boxes(
                 tuple(t.predicted_box for t in predicted),
                 tuple(d.box for d in detections),
                 self._config.min_iou,
+                self._config.assignment,
             )
         )
+        assignment_ms = (perf_counter() - assignment_start) * 1000
         updated = []
         for index, track in enumerate(predicted):
             if index in matches:
@@ -140,4 +152,4 @@ class KalmanPersonTracker:
                     )
                 )
                 next_id += 1
-        return tuple(updated), next_id
+        return tuple(updated), next_id, assignment_ms

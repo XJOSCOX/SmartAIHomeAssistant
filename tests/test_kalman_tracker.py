@@ -6,9 +6,10 @@ import pytest
 
 from jake.adapters.iou_tracker import IoUPersonTracker, TrackerError
 from jake.adapters.kalman_tracker import KalmanPersonTracker
-from jake.benchmarks import compare_trajectory
+from jake.benchmarks import compare_crossing, compare_trajectory
 from jake.config import TrackingConfig
 from jake.domain import BoundingBox, FrameContext, PersonDetection
+from jake.hungarian import AssignmentError
 from jake.kalman import KalmanError
 from jake.ports import PersonTracker
 
@@ -100,3 +101,64 @@ def test_clock_reversal_uses_fallback_and_predictions_remain_bounded() -> None:
     tracks = tracker.update(reversed_clock, ())
     assert tracks[0].box.left > person(7).box.left
     assert np.all(np.isfinite(tracker._tracks[0].motion.state))
+
+
+@pytest.mark.parametrize("strategy", ["greedy", "hungarian"])
+def test_global_assignment_integration_and_unmatched_lifecycle(strategy: str) -> None:
+    tracker = KalmanPersonTracker(TrackingConfig(assignment=strategy, max_missed_frames=1))
+    first = (
+        PersonDetection(BoundingBox(0.2, 0, 0.4, 1), 0.9),
+        PersonDetection(BoundingBox(0.3, 0, 0.5, 1), 0.8),
+    )
+    second = (
+        PersonDetection(BoundingBox(0.22, 0, 0.42, 1), 0.9),
+        PersonDetection(BoundingBox(0.1, 0, 0.3, 1), 0.8),
+    )
+    tracker.update(context(0), first)
+    tracks = tracker.update(context(1), second)
+    assert len(tracks) == (2 if strategy == "hungarian" else 3)
+    visible = [item for item in tracker.diagnostics() if item.measured_box is not None]
+    assert len(visible) == len({item.measured_box for item in visible}) == 2
+    if strategy == "hungarian":
+        assert {item.track_id: item.measured_box for item in visible} == {
+            "1": second[1].box,
+            "2": second[0].box,
+        }
+    tracker.update(context(2), ())
+    assert tracker.update(context(3), ()) == ()
+
+
+def test_gating_prevents_impossible_kalman_correction() -> None:
+    tracker = KalmanPersonTracker(TrackingConfig(assignment="hungarian"))
+    tracker.update(context(0), (person(0),))
+    far = PersonDetection(BoundingBox(0.8, 0.7, 1, 1), 0.9)
+    assert [t.track_id for t in tracker.update(context(1), (far,))] == ["1", "2"]
+    assert tracker.diagnostics()[0].missed_frames == 1
+    assert tracker.diagnostics()[0].measured_box is None
+
+
+@pytest.mark.parametrize("perturbed", [False, True])
+def test_crossing_comparison_reports_limitations(perturbed: bool) -> None:
+    greedy = compare_crossing("greedy", perturbed=perturbed)
+    global_result = compare_crossing("hungarian", perturbed=perturbed)
+    assert greedy.total_ids_created == global_result.total_ids_created == 2
+    assert greedy.observed_detections == global_result.observed_detections == 52
+    assert greedy.id_switches == global_result.id_switches == (4 if perturbed else 0)
+    assert greedy.assignment_ms >= 0 and global_result.assignment_ms >= 0
+
+
+def test_assignment_timing_and_failure_atomicity(monkeypatch: pytest.MonkeyPatch) -> None:
+    tracker = KalmanPersonTracker(TrackingConfig(assignment="hungarian"))
+    monkeypatch.setattr(
+        "jake.adapters.kalman_tracker.perf_counter", Mock(side_effect=[10.0, 10.002, 11.0])
+    )
+    tracker.update(context(0), (person(0),))
+    assert tracker.last_assignment_ms == pytest.approx(2.0)
+    before = tracker._tracks
+    monkeypatch.setattr(
+        "jake.adapters.kalman_tracker.assign_boxes", Mock(side_effect=AssignmentError("bad costs"))
+    )
+    with pytest.raises(TrackerError):
+        tracker.update(context(1), (person(1),))
+    assert tracker._tracks is before
+    assert tracker.last_assignment_ms == pytest.approx(2.0)

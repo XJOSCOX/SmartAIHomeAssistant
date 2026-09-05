@@ -85,8 +85,11 @@ class TrackingConfig:
     min_iou: float = 0.3
     max_missed_frames: int = 10
     kalman: KalmanConfig = KalmanConfig()
+    assignment: str = "greedy"
 
     def __post_init__(self) -> None:
+        if not isinstance(self.assignment, str) or self.assignment not in {"greedy", "hungarian"}:
+            raise ValueError('tracking.assignment must be "greedy" or "hungarian"')
         threshold = self.min_iou
         if (
             isinstance(threshold, bool)
@@ -144,9 +147,14 @@ def load_app_config(path: Path) -> AppConfig:
         raise ValueError("[detector] permits only model, device, and image_size")
     defaults = DetectorConfig()
     tracking = data.get("tracking", {})
-    if not isinstance(tracking, dict) or set(tracking) - {"min_iou", "max_missed_frames", "kalman"}:
+    if not isinstance(tracking, dict) or set(tracking) - {
+        "min_iou",
+        "max_missed_frames",
+        "kalman",
+        "assignment",
+    }:
         raise ValueError(
-            "[tracking] permits only min_iou, max_missed_frames, and [tracking.kalman]"
+            "[tracking] permits only min_iou, max_missed_frames, assignment, and [tracking.kalman]"
         )
     kalman = tracking.get("kalman", {})
     noise_defaults = KalmanConfig()
@@ -171,5 +179,6 @@ def load_app_config(path: Path) -> AppConfig:
                 "max_missed_frames", tracking_defaults.max_missed_frames
             ),
             kalman=noise_config,
+            assignment=tracking.get("assignment", tracking_defaults.assignment),
         ),
     )

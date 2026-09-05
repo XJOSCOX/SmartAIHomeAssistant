@@ -19,6 +19,51 @@ class Comparison:
     unmatched_detections: int
 
 
+@dataclass(frozen=True, slots=True)
+class AssignmentComparison:
+    total_ids_created: int
+    id_switches: int
+    assignment_ms: float
+    observed_detections: int
+
+
+def compare_crossing(strategy: str, *, perturbed: bool = True) -> AssignmentComparison:
+    """Two crossing paths; optional known detector jitter near the crossing.
+
+    Evaluate the tracker's exact measurement associations via diagnostics, not
+    another greedy spatial matcher. No ground-truth identity enters the tracker.
+    Timing includes costs/gating/solver only and is intentionally not deterministic.
+    """
+    tracker = KalmanPersonTracker(TrackingConfig(assignment=strategy))
+    seen: set[str] = set()
+    last_ids: dict[int, str] = {}
+    switches = observed = 0
+    assignment_ms = 0.0
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    for sequence in range(26):
+        detections = []
+        for identity in range(2):
+            center = 0.2 + 0.025 * sequence if identity == 0 else 0.81 - 0.025 * sequence
+            if perturbed and sequence == 11:
+                center += 0.04 if identity == 0 else 0.03
+            detections.append(
+                PersonDetection(BoundingBox(center - 0.09, 0.3, center + 0.09, 0.7), 0.9)
+            )
+        context = FrameContext("crossing", sequence, start + timedelta(seconds=sequence * 0.1))
+        tracks = tracker.update(context, tuple(detections))
+        seen.update(t.track_id for t in tracks)
+        assignment_ms += tracker.last_assignment_ms
+        for item in tracker.diagnostics():
+            if item.measured_box is None:
+                continue
+            identity = next(i for i, d in enumerate(detections) if d.box == item.measured_box)
+            observed += 1
+            if identity in last_ids and last_ids[identity] != item.track_id:
+                switches += 1
+            last_ids[identity] = item.track_id
+    return AssignmentComparison(len(seen), switches, assignment_ms, observed)
+
+
 def compare_trajectory(tracker: PersonTracker, *, occlusion: bool) -> Comparison:
     """Two people in separate image bands; one optionally disappears for 3 frames.
 
@@ -65,6 +110,15 @@ def main() -> None:
         ):
             result = compare_trajectory(tracker, occlusion=occlusion)
             print(f"{name:6} occlusion={occlusion}: {result}")
+    for perturbed in (False, True):
+        for strategy in ("greedy", "hungarian"):
+            assignment_result = compare_crossing(strategy, perturbed=perturbed)
+            print(
+                f"{strategy.upper():9} crossing jitter={perturbed}: "
+                f"total IDs created={assignment_result.total_ids_created}, "
+                f"ID switches={assignment_result.id_switches}, "
+                f"assignment time={assignment_result.assignment_ms:.3f} ms total (26 frames)"
+            )
 
 
 if __name__ == "__main__":

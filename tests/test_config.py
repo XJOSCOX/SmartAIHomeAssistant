@@ -174,3 +174,23 @@ def test_nested_kalman_settings(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="unknown setting"):
         load_app_config(path)
+
+
+@pytest.mark.parametrize("value", ['"bad"', '"HUNGARIAN"', "true", "1", "[]"])
+def test_invalid_assignment_setting(tmp_path: Path, value: str) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        f'[pipeline]\ncamera_id = "test"\n[tracking]\nassignment = {value}', encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="tracking.assignment"):
+        load_app_config(path)
+
+
+def test_assignment_configuration_and_backwards_default(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text('[pipeline]\ncamera_id = "test"', encoding="utf-8")
+    assert load_app_config(path).tracking.assignment == "greedy"
+    path.write_text(
+        '[pipeline]\ncamera_id = "test"\n[tracking]\nassignment = "hungarian"', encoding="utf-8"
+    )
+    assert load_app_config(path).tracking.assignment == "hungarian"

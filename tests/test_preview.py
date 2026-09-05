@@ -243,3 +243,30 @@ def test_invalid_tracker_cli_options_do_not_open_camera(
         main(args)
     assert raised.value.code == 2
     desktop["VideoCapture"].assert_not_called()
+
+
+@pytest.mark.parametrize("override", [None, "greedy"])
+def test_assignment_cli_config_precedence_and_debug_label(
+    desktop: dict[str, Mock], tmp_path: Path, monkeypatch: pytest.MonkeyPatch, override: str | None
+) -> None:
+    factory = Mock()
+    factory.return_value.detect.return_value = ()
+    monkeypatch.setattr("jake.adapters.yolo_detector.YoloPersonDetector", factory)
+    path = tmp_path / "config.toml"
+    path.write_text(
+        '[pipeline]\ncamera_id = "test"\n[tracking]\nassignment = "hungarian"', encoding="utf-8"
+    )
+    args = ["--config", str(path), "--track", "--tracker", "kalman", "--debug-tracks"]
+    if override:
+        args.extend(["--assignment", override])
+    assert main(args) == 0
+    labels = [call.args[1] for call in desktop["putText"].call_args_list]
+    assert f"assignment {override or 'hungarian'}" in labels
+    assert 'assignment = "hungarian"' in path.read_text(encoding="utf-8")
+
+
+def test_assignment_flag_requires_tracking(desktop: dict[str, Mock]) -> None:
+    with pytest.raises(SystemExit) as raised:
+        main(["--assignment", "hungarian"])
+    assert raised.value.code == 2
+    desktop["VideoCapture"].assert_not_called()
