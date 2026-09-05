@@ -5,9 +5,10 @@ import cv2
 import numpy as np
 import pytest
 
+from jake.adapters.iou_tracker import IoUPersonTracker, TrackerError
 from jake.adapters.yolo_detector import DetectorError
 from jake.cli import main
-from jake.config import AppConfig, CameraConfig, PipelineConfig
+from jake.config import AppConfig, CameraConfig, PipelineConfig, TrackingConfig
 from jake.domain import BoundingBox, PersonDetection
 from jake.preview import preview
 
@@ -73,6 +74,80 @@ def test_cli_missing_configuration_does_not_open_camera(
 ) -> None:
     assert main(["--config", str(tmp_path / "missing.toml")]) == 2
     desktop["VideoCapture"].assert_not_called()
+
+
+def test_tracking_preview_keeps_ids_and_reports_retained_tracks(
+    desktop: dict[str, Mock], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cv2, "rectangle", Mock())
+    desktop["waitKey"].side_effect = [-1, -1, ord("Q")]
+    detector = Mock()
+    person = PersonDetection(BoundingBox(0.1, 0.5, 0.9, 1), 0.942)
+    detector.detect.side_effect = [(person,), (), (person,)]
+    tracker = IoUPersonTracker(TrackingConfig())
+    preview(AppConfig(PipelineConfig("test")), detector, tracker)
+    labels = [call.args[1] for call in desktop["putText"].call_args_list]
+    assert labels.count("ID 1 | PERSON 94.2%") == 3
+    assert labels.count("active tracks 1 (includes missed)") == 3
+    assert any("people 0" in text and "inference" in text for text in labels)
+    assert not any("ID 2" in text for text in labels)
+    desktop["capture"].release.assert_called_once_with()
+
+
+def test_tracking_requires_detector_before_camera_open(desktop: dict[str, Mock]) -> None:
+    with pytest.raises(ValueError, match="requires a detector"):
+        preview(AppConfig(PipelineConfig("test")), tracker=IoUPersonTracker(TrackingConfig()))
+    desktop["VideoCapture"].assert_not_called()
+
+
+def test_tracker_failure_cleans_up_preview(desktop: dict[str, Mock]) -> None:
+    detector, tracker = Mock(), Mock()
+    detector.detect.return_value = ()
+    tracker.update.side_effect = TrackerError("invalid session")
+    with pytest.raises(TrackerError):
+        preview(AppConfig(PipelineConfig("test")), detector, tracker)
+    desktop["capture"].release.assert_called_once_with()
+    desktop["destroyWindow"].assert_called_once()
+
+
+def test_cli_track_implies_detect_and_passes_tracker_configuration(
+    desktop: dict[str, Mock], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text(
+        '[pipeline]\ncamera_id = "test"\n[tracking]\nmin_iou = 0.8\nmax_missed_frames = 3',
+        encoding="utf-8",
+    )
+    detector_factory, tracker_factory = Mock(), Mock()
+    detector_factory.return_value.detect.return_value = ()
+    tracker_factory.return_value.update.return_value = ()
+    monkeypatch.setattr("jake.adapters.yolo_detector.YoloPersonDetector", detector_factory)
+    monkeypatch.setattr("jake.adapters.iou_tracker.IoUPersonTracker", tracker_factory)
+    assert main(["--config", str(config), "--detect"]) == 0
+    tracker_factory.assert_not_called()
+    detector_factory.reset_mock()
+    assert main(["--config", str(config), "--track"]) == 0
+    detector_factory.assert_called_once()
+    tracker_factory.assert_called_once_with(TrackingConfig(0.8, 3))
+    assert tracker_factory.return_value.update.call_args.args[0].camera_id == "test"
+
+
+def test_cli_reports_tracker_error(
+    desktop: dict[str, Mock],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text('[pipeline]\ncamera_id = "test"', encoding="utf-8")
+    detector_factory, tracker_factory = Mock(), Mock()
+    detector_factory.return_value.detect.return_value = ()
+    tracker_factory.return_value.update.side_effect = TrackerError("invalid tracker frame")
+    monkeypatch.setattr("jake.adapters.yolo_detector.YoloPersonDetector", detector_factory)
+    monkeypatch.setattr("jake.adapters.iou_tracker.IoUPersonTracker", tracker_factory)
+    assert main(["--config", str(config), "--track"]) == 1
+    assert "invalid tracker frame" in capsys.readouterr().err
+    desktop["capture"].release.assert_called_once_with()
 
 
 @pytest.mark.parametrize("key", ["q", "Q"])

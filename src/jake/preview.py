@@ -10,13 +10,15 @@ from numpy.typing import NDArray
 from jake.adapters.opencv_camera import OpenCVCamera
 from jake.config import AppConfig
 from jake.diagnostics import measure_detection
-from jake.domain import PersonDetection
-from jake.ports import PersonDetector
+from jake.domain import FrameContext, PersonDetection, PersonTrack
+from jake.ports import PersonDetector, PersonTracker
 
 WINDOW = "Jake local camera - q/Q to quit"
 
 
-def draw_people(display: NDArray[np.uint8], detections: tuple[PersonDetection, ...]) -> None:
+def draw_people(
+    display: NDArray[np.uint8], detections: tuple[PersonDetection | PersonTrack, ...]
+) -> None:
     """Render structured detections on the preview copy, never on a Frame."""
     height, width = display.shape[:2]
     for detection in detections:
@@ -26,7 +28,8 @@ def draw_people(display: NDArray[np.uint8], detections: tuple[PersonDetection, .
         cv2.rectangle(display, (left, top), (right, bottom), (0, 255, 0), 2)
         cv2.putText(
             display,
-            f"PERSON {detection.confidence:.1%}",
+            (f"ID {detection.track_id} | " if isinstance(detection, PersonTrack) else "")
+            + f"PERSON {detection.confidence:.1%}",
             (left, max(15, top - 8)),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.5,
@@ -35,8 +38,14 @@ def draw_people(display: NDArray[np.uint8], detections: tuple[PersonDetection, .
         )
 
 
-def preview(config: AppConfig, detector: PersonDetector | None = None) -> None:
+def preview(
+    config: AppConfig,
+    detector: PersonDetector | None = None,
+    tracker: PersonTracker | None = None,
+) -> None:
     """Display frames on the main thread, with no recording or persistence."""
+    if tracker is not None and detector is None:
+        raise ValueError("tracking preview requires a detector")
     with OpenCVCamera(config.pipeline.camera_id, config.camera) as camera:
         try:
             cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
@@ -48,7 +57,23 @@ def preview(config: AppConfig, detector: PersonDetector | None = None) -> None:
                 )
                 display = np.asarray(cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), dtype=np.uint8)
                 if measurement is not None:
-                    draw_people(display, measurement.detections)
+                    if tracker is not None:
+                        tracks = tracker.update(
+                            FrameContext(frame.camera_id, frame.sequence, frame.captured_at),
+                            measurement.detections,
+                        )
+                        draw_people(display, tracks)
+                        cv2.putText(
+                            display,
+                            f"active tracks {len(tracks)} (includes missed)",
+                            (10, 80),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.5,
+                            (0, 255, 0),
+                            1,
+                        )
+                    else:
+                        draw_people(display, measurement.detections)
                     cv2.putText(
                         display,
                         f"people {len(measurement.detections)} | "

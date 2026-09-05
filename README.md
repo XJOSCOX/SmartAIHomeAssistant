@@ -2,9 +2,9 @@
 
 Jake is the foundation for a privacy-first, local-first smart home AI system.
 The intended system will understand household events locally and eventually
-support natural conversation. **Phase 1B adds local, pretrained YOLO person
-detection and bounding boxes to the USB/webcam development preview. Tracking
-and persistent identity are not implemented.**
+support natural conversation. **Phase 1C adds Jake's own multi-person IoU tracker
+and session-local track IDs to the USB/webcam development preview. Resident
+identity recognition is not implemented.**
 
 ## Phase 1 scope
 
@@ -17,9 +17,9 @@ Camera adapter → Frame → PersonDetector → PersonTracker → EventGenerator
 
 The production package defines immutable data contracts, structural interfaces,
 validated TOML configuration, synchronous pipeline orchestration, and a concrete
-OpenCV camera adapter and replaceable YOLO person detector. The Phase 1B preview
-uses `FrameSource → PersonDetector → PersonDetection[] → display` directly;
-it does not instantiate a tracker or event generator. There are no recordings,
+OpenCV camera adapter, replaceable YOLO person detector, and Jake-owned tracker.
+The Phase 1C preview uses `FrameSource → PersonDetector → PersonTracker → display`;
+event-generation algorithms remain future work. There are no recordings,
 databases, identity recognition algorithms, or background services.
 
 ## Development
@@ -167,7 +167,7 @@ dependency sync using `uv run --offline --no-sync jake-camera --config config/lo
 Omit `--detect` to keep the original camera-only preview. Press **q**, **Q**, or
 **Ctrl+C** to stop. Each box is labeled `PERSON 97.4%` (confidence varies).
 The people count is the number detected in the current frame, not unique people
-across time. No tracking or identity is inferred across frames.
+across time. This `--detect` mode performs no tracking; use `--track` for Phase 1C.
 
 ### Timing and CPU/GPU expectations
 
@@ -211,6 +211,113 @@ input/results in process memory; there is no disk image persistence. Weights and
 local configuration are ignored by Git. Start Jake in its own process so these
 privacy settings are applied before other uses of the framework.
 
+## Phase 1C: Jake-owned multi-person tracking
+
+Detection answers "where are people in this frame?" Tracking associates those
+detections across successive frames and assigns a stable session-local label.
+**A track ID is NOT a resident identity.** It does not identify a person by face,
+appearance, gait, name, or household membership. IDs are stored only in memory
+and start again at `1` when a new tracker instance/session starts.
+
+With the Phase 1B dependencies and local weights already set up, run:
+
+```sh
+uv run --extra detection jake-camera --config config/local.toml --track
+```
+
+`--track` automatically enables detection. `--detect` alone retains independent
+per-frame detection. Omit both flags for camera-only preview. For an
+already-installed environment, use `uv run --offline --no-sync jake-camera --config config/local.toml --track`.
+Both **q/Q** and **Ctrl+C** still close the preview and release the camera.
+
+Optionally add these settings to your existing `config/local.toml`:
+
+```toml
+[tracking]
+min_iou = 0.3
+max_missed_frames = 10
+```
+
+These are also the defaults for old configurations. `min_iou` must be finite,
+strictly greater than zero, and at most one; zero is rejected so disjoint boxes
+cannot be associated. `max_missed_frames` must be a non-negative integer. A value
+of zero expires a track on its first unmatched update. Booleans, numeric strings,
+fractional missed-frame counts, and unknown settings are rejected.
+
+The preview labels tracks as `ID 1 | PERSON 94.2%`. It shows active tracks,
+people detected in the current frame, detector inference milliseconds, preview
+FPS, sequence, and resolution. **Active includes temporarily missed tracks**:
+their last-seen box and confidence remain displayed during the grace period.
+They are not newly observed people or motion predictions. As a result, active
+track count can exceed current detections, and stale boxes can remain briefly.
+Tracking and rendering run outside the detector-only latency measurement;
+their cost is included in preview throughput.
+
+### IoU and deterministic assignment
+
+For two boxes A and B:
+
+```text
+IoU(A, B) = area(A ∩ B) / (area(A) + area(B) - area(A ∩ B))
+```
+
+Identical boxes score 1; disjoint or merely touching boxes score 0. The tracker
+compares every active track's last-seen box to every new detection, keeping pairs
+whose score is at least `min_iou`. It sorts candidates by descending IoU, breaking
+ties by track creation order and then input detection order. It greedily accepts
+a pair only when neither member has been assigned. Thus each detection updates
+at most one track, and each track consumes at most one detection. Equal ordered
+inputs produce equal results; arbitrary changes in detection order can affect ties.
+
+The pure functions in `matching.py` own geometry and assignment. `IoUPersonTracker`
+implements the existing `PersonTracker` protocol and owns lifecycle state.
+It imports neither OpenCV nor Ultralytics, never calls YOLO's tracking API, and
+receives only metadata and structured detections. The preview contains no
+association or lifecycle state, and the public `PersonTrack` contract is unchanged.
+
+### Track lifecycle
+
+- Unmatched detections create new tracks with incremental string IDs (`1`, `2`,
+  ...), in detection order. IDs are never reused within a session.
+- A matched track keeps its ID, updates box/confidence and `last_seen_at`,
+  increments `visible_frames`, and resets `missed_frames` to zero.
+- Unmatched tracks increment consecutive `missed_frames`. They remain active
+  while `missed_frames <= max_missed_frames`; the next unmatched update removes
+  them. Reconnection with sufficient IoU before removal keeps the original ID.
+  Reappearance after removal creates a new ID.
+- Internal state also retains `created_at` and `age_frames`. Age and cumulative
+  visible count both start at one. Age advances on every subsequent processed
+  update while alive, including empty detection updates. Last-seen time and
+  confidence do not change on a miss.
+
+For `max_missed_frames = 2`, two empty updates preserve a track. A matching third
+update reconnects it; an empty third update expires it. Misses count processed
+`update()` calls, not wall-clock time or gaps in capture sequence numbers. Skipped
+camera frames were not evaluated and do not count as observed misses. One tracker
+belongs to one camera session and must be called serially. Mixed camera IDs and
+duplicate/decreasing sequences raise `TrackerError` without changing state.
+
+For T active tracks and D detections, candidate generation is **O(T × D)**.
+Sorting K valid candidates costs **O(K log K)**, at worst approximately
+**O((T × D) log(T × D))**. Candidate storage is **O(T × D)** worst case;
+lifecycle maintenance costs O(T + D), with O(T) persistent state. No image history,
+network calls, identity recognition, or disk persistence is involved.
+
+### Limitations and next step
+
+IoU-only matching cannot predict motion or recover identity from appearance.
+Fast movement, camera movement, changed box sizes, and missed detections can
+break overlap. IDs can switch when people cross or become heavily occluded.
+A new person entering a retained box can inherit its ID. Increasing the grace
+period preserves IDs longer but can keep stale tracks alive; raising the IoU
+threshold rejects weak matches but can fragment tracks. Greedy assignment is
+deterministic, not globally optimal.
+
+Phase 1D is planned to add Kalman motion prediction and a Hungarian assignment
+upgrade behind the same protocol. The isolated matching function is the replacement
+point for assignment. Neither algorithm, nor biometric/household identity, is
+implemented in Phase 1C.
+
 ## Repository layout
 
 ```text
@@ -222,6 +329,8 @@ src/jake/
   adapters/
     opencv_camera.py  Context-managed local FrameSource implementation
     yolo_detector.py  Local Ultralytics PersonDetector implementation
+    iou_tracker.py   Jake-owned PersonTracker and internal lifecycle state
+  matching.py     Pure IoU geometry and deterministic greedy assignment
   diagnostics.py  Framework-independent detector timing
   preview.py      Local OpenCV display and development overlay
   cli.py          jake-camera entry point
@@ -250,8 +359,8 @@ composition change, without modifying the tracker or pipeline.
   scores below the configured threshold before updating the tracker.
 - `PersonTracker` receives metadata and detections, including empty updates, and
   returns the current active tracks. Track IDs are scoped to a camera session;
-  they are not resident identities. Occlusion, expiry, and assignment policies
-  belong to a future implementation. Image-based tracking would require an
+  they are not resident identities. `IoUPersonTracker` implements greedy IoU
+  assignment and missed-frame expiry. Image-based tracking would require an
   explicit extension to the current metadata-only tracker contract.
 - `EventGenerator` receives metadata and active tracks, including empty updates.
   The contract supports entered, updated, and left events. Transition logic,
@@ -305,8 +414,9 @@ with OpenCVCamera(config.pipeline.camera_id, config.camera) as source:
 
 The preview CLI uses the source directly; it does not instantiate this perception
 pipeline or fake detections. Existing callers of `load_config()` still receive
-`PipelineConfig`; `load_app_config()` also exposes `CameraConfig` and `DetectorConfig`.
-Legacy configuration defaults to camera zero and the documented detector settings.
+`PipelineConfig`; `load_app_config()` also exposes `CameraConfig`, `DetectorConfig`,
+and `TrackingConfig`. Legacy configuration defaults to camera zero and the
+documented detector/tracker settings.
 Weights are checked only when detection is enabled. Both loaders
 validate the entire file and reject unknown sections/settings.
 
@@ -328,15 +438,16 @@ are ignored by Git; ignore rules are not an access-control mechanism.
 
 ## Roadmap
 
-The Phase 1 foundation, 1A local acquisition, and 1B person detection are implemented.
+The Phase 1 foundation, 1A acquisition, 1B detection, and 1C tracking are implemented.
 Phase 1A was physically validated on Windows at approximately 19 FPS, 640×480,
-with advancing sequences and successful shutdown. Phase 1B still needs a local
-pretrained-model webcam validation. The sequence below is a planning
+with advancing sequences and successful shutdown. Phase 1B was also physically
+validated with multiple people and CPU inference fast enough for development.
+Phase 1C requires local tracking validation. The sequence below is a planning
 outline, not a promise that later phases already exist.
 
 | Phase | Planned capabilities |
 | --- | --- |
-| 1 — perception | Foundation, 1A camera acquisition, and 1B person detection complete; 1C tracking and subsequent event-generation algorithms remain future work |
+| 1 — perception | Foundation, 1A acquisition, 1B detection, and 1C IoU tracking complete; 1D Kalman/Hungarian upgrades and event-generation algorithms remain future work |
 | 2 — recognition | Resident recognition, frequent visitor recognition, delivery/visitor classification, with consent and identity-data controls |
 | 3 — understanding and memory | Activity recognition, event memory, household behavioral learning, anomaly detection, and governed continual learning |
 | 4 — voice and interaction | Speech recognition, text-to-speech, basic conversational AI, context-aware resident greetings, and daily/event summaries |

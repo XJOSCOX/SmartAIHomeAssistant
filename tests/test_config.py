@@ -2,7 +2,14 @@ from pathlib import Path
 
 import pytest
 
-from jake.config import CameraConfig, DetectorConfig, PipelineConfig, load_app_config, load_config
+from jake.config import (
+    CameraConfig,
+    DetectorConfig,
+    PipelineConfig,
+    TrackingConfig,
+    load_app_config,
+    load_config,
+)
 
 
 def test_example_configuration() -> None:
@@ -105,3 +112,39 @@ def test_detector_configuration_and_defaults(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     assert load_app_config(path).detector == DetectorConfig("models/custom.pt", "0", 320)
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        "min_iou = -0.1",
+        "min_iou = 0",
+        "min_iou = 1.1",
+        "min_iou = nan",
+        "min_iou = inf",
+        "min_iou = true",
+        'min_iou = "0.3"',
+        "max_missed_frames = -1",
+        "max_missed_frames = 1.5",
+        "max_missed_frames = true",
+        'max_missed_frames = "10"',
+        "unknown = 1",
+    ],
+)
+def test_invalid_tracking_config(tmp_path: Path, settings: str) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(f'[pipeline]\ncamera_id = "test"\n[tracking]\n{settings}', encoding="utf-8")
+    with pytest.raises(ValueError):
+        load_app_config(path)
+
+
+def test_tracking_defaults_and_valid_boundaries(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text('[pipeline]\ncamera_id = "test"', encoding="utf-8")
+    assert load_app_config(path).tracking == TrackingConfig(0.3, 10)
+    path.write_text(
+        '[pipeline]\ncamera_id = "test"\n[tracking]\nmin_iou = 1\nmax_missed_frames = 0',
+        encoding="utf-8",
+    )
+    assert load_app_config(path).tracking == TrackingConfig(1, 0)
+    assert load_config(path) == PipelineConfig("test")

@@ -12,6 +12,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Jake local webcam preview (no recording)")
     parser.add_argument("--config", type=Path, default=Path("config/local.toml"))
     parser.add_argument("--detect", action="store_true", help="Enable local person detection")
+    parser.add_argument(
+        "--track", action="store_true", help="Enable Jake tracking (implies --detect)"
+    )
     args = parser.parse_args(argv)
     try:
         config = load_app_config(args.config)
@@ -21,6 +24,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         import cv2
 
+        from jake.adapters.iou_tracker import IoUPersonTracker, TrackerError
         from jake.adapters.opencv_camera import CameraError
         from jake.adapters.yolo_detector import DetectorError, YoloPersonDetector
         from jake.preview import preview
@@ -30,14 +34,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         detector = (
             YoloPersonDetector(config.detector, config.pipeline.min_person_confidence)
-            if args.detect
+            if args.detect or args.track
             else None
         )
-        preview(config, detector)
+        tracker = IoUPersonTracker(config.tracking) if args.track else None
+        preview(config, detector, tracker)
     except KeyboardInterrupt:
         print("\nCamera preview stopped.")
         return 0
-    except (CameraError, DetectorError, cv2.error) as exc:
+    except (CameraError, DetectorError, TrackerError, cv2.error) as exc:
         print(f"Camera preview error: {exc}", file=sys.stderr)
         return 1
     return 0

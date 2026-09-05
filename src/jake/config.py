@@ -55,10 +55,30 @@ class DetectorConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class TrackingConfig:
+    min_iou: float = 0.3
+    max_missed_frames: int = 10
+
+    def __post_init__(self) -> None:
+        threshold = self.min_iou
+        if (
+            isinstance(threshold, bool)
+            or not isinstance(threshold, (int, float))
+            or not isfinite(threshold)
+            or not 0 < threshold <= 1
+        ):
+            raise ValueError("tracking.min_iou must be finite and in (0, 1]")
+        missed = self.max_missed_frames
+        if isinstance(missed, bool) or not isinstance(missed, int) or missed < 0:
+            raise ValueError("tracking.max_missed_frames must be a non-negative integer")
+
+
+@dataclass(frozen=True, slots=True)
 class AppConfig:
     pipeline: PipelineConfig
     camera: CameraConfig = CameraConfig()
     detector: DetectorConfig = DetectorConfig()
+    tracking: TrackingConfig = TrackingConfig()
 
 
 def load_config(path: Path) -> PipelineConfig:
@@ -74,8 +94,12 @@ def load_app_config(path: Path) -> AppConfig:
     """
     with path.open("rb") as stream:
         data = tomllib.load(stream)
-    if set(data) - {"pipeline", "camera", "detector"} or not isinstance(data.get("pipeline"), dict):
-        raise ValueError("configuration requires [pipeline] and permits [camera] and [detector]")
+    if set(data) - {"pipeline", "camera", "detector", "tracking"} or not isinstance(
+        data.get("pipeline"), dict
+    ):
+        raise ValueError(
+            "configuration requires [pipeline] and permits [camera], [detector], [tracking]"
+        )
     pipeline = data["pipeline"]
     if set(pipeline) - {"camera_id", "min_person_confidence"}:
         raise ValueError("unknown pipeline configuration key")
@@ -92,6 +116,10 @@ def load_app_config(path: Path) -> AppConfig:
     if not isinstance(detector, dict) or set(detector) - {"model", "device", "image_size"}:
         raise ValueError("[detector] permits only model, device, and image_size")
     defaults = DetectorConfig()
+    tracking = data.get("tracking", {})
+    if not isinstance(tracking, dict) or set(tracking) - {"min_iou", "max_missed_frames"}:
+        raise ValueError("[tracking] permits only min_iou and max_missed_frames")
+    tracking_defaults = TrackingConfig()
     return AppConfig(
         pipeline_config,
         CameraConfig(device=camera.get("device", 0)),
@@ -99,5 +127,11 @@ def load_app_config(path: Path) -> AppConfig:
             model=detector.get("model", defaults.model),
             device=detector.get("device", defaults.device),
             image_size=detector.get("image_size", defaults.image_size),
+        ),
+        TrackingConfig(
+            min_iou=tracking.get("min_iou", tracking_defaults.min_iou),
+            max_missed_frames=tracking.get(
+                "max_missed_frames", tracking_defaults.max_missed_frames
+            ),
         ),
     )
