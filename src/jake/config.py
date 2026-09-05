@@ -31,9 +31,34 @@ class CameraConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class DetectorConfig:
+    model: str = "models/yolo11n.pt"
+    device: str = "cpu"
+    image_size: int = 640
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.model, str) or not self.model.strip():
+            raise ValueError("detector.model must be a local weight path or filename")
+        if "://" in self.model or Path(self.model).suffix.lower() != ".pt":
+            raise ValueError("detector.model must name local .pt weights, not a URL")
+        if not isinstance(self.device, str) or not (
+            self.device in {"cpu", "mps"} or self.device.isdecimal()
+        ):
+            raise ValueError('detector.device must be "cpu", "mps", or a GPU index string like "0"')
+        if (
+            isinstance(self.image_size, bool)
+            or not isinstance(self.image_size, int)
+            or self.image_size < 32
+            or self.image_size % 32
+        ):
+            raise ValueError("detector.image_size must be a positive multiple of 32")
+
+
+@dataclass(frozen=True, slots=True)
 class AppConfig:
     pipeline: PipelineConfig
     camera: CameraConfig = CameraConfig()
+    detector: DetectorConfig = DetectorConfig()
 
 
 def load_config(path: Path) -> PipelineConfig:
@@ -49,8 +74,8 @@ def load_app_config(path: Path) -> AppConfig:
     """
     with path.open("rb") as stream:
         data = tomllib.load(stream)
-    if set(data) - {"pipeline", "camera"} or not isinstance(data.get("pipeline"), dict):
-        raise ValueError("configuration requires [pipeline] and permits only [camera] alongside it")
+    if set(data) - {"pipeline", "camera", "detector"} or not isinstance(data.get("pipeline"), dict):
+        raise ValueError("configuration requires [pipeline] and permits [camera] and [detector]")
     pipeline = data["pipeline"]
     if set(pipeline) - {"camera_id", "min_person_confidence"}:
         raise ValueError("unknown pipeline configuration key")
@@ -63,4 +88,16 @@ def load_app_config(path: Path) -> AppConfig:
         camera_id=pipeline["camera_id"],
         min_person_confidence=pipeline.get("min_person_confidence", 0.5),
     )
-    return AppConfig(pipeline_config, CameraConfig(device=camera.get("device", 0)))
+    detector = data.get("detector", {})
+    if not isinstance(detector, dict) or set(detector) - {"model", "device", "image_size"}:
+        raise ValueError("[detector] permits only model, device, and image_size")
+    defaults = DetectorConfig()
+    return AppConfig(
+        pipeline_config,
+        CameraConfig(device=camera.get("device", 0)),
+        DetectorConfig(
+            model=detector.get("model", defaults.model),
+            device=detector.get("device", defaults.device),
+            image_size=detector.get("image_size", defaults.image_size),
+        ),
+    )

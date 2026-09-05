@@ -6,3 +6,10 @@ min_person_confidence = 0.5
 [camera]
 # Local camera index only; URLs and video files are not accepted.
 device = 0
+
+[detector]
+# Download weights explicitly first; relative paths are relative to the working directory.
+model = "models/yolo11n.pt"
+device = "cpu"
+image_size = 640
+# Uses pipeline.min_person_confidence as the single confidence threshold.

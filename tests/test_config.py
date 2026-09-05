@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from jake.config import CameraConfig, PipelineConfig, load_app_config, load_config
+from jake.config import CameraConfig, DetectorConfig, PipelineConfig, load_app_config, load_config
 
 
 def test_example_configuration() -> None:
@@ -69,3 +69,39 @@ def test_invalid_camera_settings(tmp_path: Path, camera: str) -> None:
     path.write_text(f'[pipeline]\ncamera_id = "test"\n[camera]\n{camera}', encoding="utf-8")
     with pytest.raises(ValueError):
         load_app_config(path)
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        'model = ""',
+        'model = "https://example.com/model.pt"',
+        'model = "model.onnx"',
+        "model = 3",
+        'device = "cuda:auto"',
+        "device = 0",
+        "device = true",
+        "image_size = 0",
+        "image_size = 33",
+        "image_size = true",
+        "image_size = 640.5",
+        "unknown = 1",
+    ],
+)
+def test_invalid_detector_configuration(tmp_path: Path, settings: str) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(f'[pipeline]\ncamera_id = "test"\n[detector]\n{settings}', encoding="utf-8")
+    with pytest.raises(ValueError):
+        load_app_config(path)
+
+
+def test_detector_configuration_and_defaults(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text('[pipeline]\ncamera_id = "test"', encoding="utf-8")
+    assert load_app_config(path).detector == DetectorConfig()
+    path.write_text(
+        '[pipeline]\ncamera_id = "test"\n[detector]\n'
+        'model = "models/custom.pt"\ndevice = "0"\nimage_size = 320',
+        encoding="utf-8",
+    )
+    assert load_app_config(path).detector == DetectorConfig("models/custom.pt", "0", 320)

@@ -12,6 +12,7 @@ dependencies = []
 
 [project.optional-dependencies]
 vision = ["opencv-python>=4.13,<5", "numpy>=2,<3"]
+detection = ["opencv-python>=4.13,<5", "numpy>=2,<3", "ultralytics==8.4.141"]
 
 [project.scripts]
 jake-camera = "jake.cli:main"

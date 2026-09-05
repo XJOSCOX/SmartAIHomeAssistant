@@ -21,6 +21,8 @@ coverage.xml
 config/local*.toml
 data/
 models/
+*.pt
+runs/
 recordings/
 *.log
 
