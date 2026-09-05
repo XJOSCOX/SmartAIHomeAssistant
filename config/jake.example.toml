@@ -1,4 +1,8 @@
-# Non-secret application configuration. Camera adapters are not implemented yet.
+# Non-secret application configuration.
 [pipeline]
 camera_id = "front-door"
 min_person_confidence = 0.5
+
+[camera]
+# Local camera index only; URLs and video files are not accepted.
+device = 0

@@ -10,6 +10,12 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
 
+[project.optional-dependencies]
+vision = ["opencv-python>=4.13,<5", "numpy>=2,<3"]
+
+[project.scripts]
+jake-camera = "jake.cli:main"
+
 [dependency-groups]
 dev = ["pytest>=8.3,<10", "pytest-cov>=6,<8", "mypy>=1.15,<2", "ruff>=0.11,<1"]
 
