@@ -1,0 +1,4 @@
+# Non-secret application configuration. Camera adapters are not implemented yet.
+[pipeline]
+camera_id = "front-door"
+min_person_confidence = 0.5
