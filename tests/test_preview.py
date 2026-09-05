@@ -207,3 +207,39 @@ def test_missing_model_fails_before_camera_open(desktop: dict[str, Mock], tmp_pa
     )
     assert main(["--config", str(config), "--detect"]) == 1
     desktop["VideoCapture"].assert_not_called()
+
+
+@pytest.mark.parametrize("debug", [False, True])
+def test_kalman_cli_and_debug_diagnostics(
+    desktop: dict[str, Mock], tmp_path: Path, monkeypatch: pytest.MonkeyPatch, debug: bool
+) -> None:
+    rectangles = Mock()
+    monkeypatch.setattr(cv2, "rectangle", rectangles)
+    desktop["waitKey"].side_effect = [-1, ord("Q")]
+    factory = Mock()
+    person = PersonDetection(BoundingBox(0.1, 0.5, 0.9, 1), 0.9)
+    factory.return_value.detect.side_effect = [(person,), ()]
+    monkeypatch.setattr("jake.adapters.yolo_detector.YoloPersonDetector", factory)
+    path = tmp_path / "config.toml"
+    path.write_text('[pipeline]\ncamera_id = "test"', encoding="utf-8")
+    args = ["--config", str(path), "--track", "--tracker", "kalman"]
+    if debug:
+        args.append("--debug-tracks")
+    assert main(args) == 0
+    labels = [call.args[1] for call in desktop["putText"].call_args_list]
+    assert labels.count("ID 1 | PERSON 90.0%") == 2
+    assert ("ID 1 | missed 1" in labels) is debug
+    assert any(call.args[3] == (0, 165, 255) for call in rectangles.call_args_list) is debug
+    desktop["capture"].release.assert_called_once_with()
+
+
+@pytest.mark.parametrize(
+    "args", [["--tracker", "kalman"], ["--debug-tracks"], ["--track", "--debug-tracks"]]
+)
+def test_invalid_tracker_cli_options_do_not_open_camera(
+    desktop: dict[str, Mock], args: list[str]
+) -> None:
+    with pytest.raises(SystemExit) as raised:
+        main(args)
+    assert raised.value.code == 2
+    desktop["VideoCapture"].assert_not_called()

@@ -11,6 +11,7 @@ requires-python = ">=3.11"
 dependencies = []
 
 [project.optional-dependencies]
+tracking = ["numpy>=2,<3"]
 vision = ["opencv-python>=4.13,<5", "numpy>=2,<3"]
 detection = ["opencv-python>=4.13,<5", "numpy>=2,<3", "ultralytics==8.4.141"]
 

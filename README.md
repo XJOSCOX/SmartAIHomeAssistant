@@ -2,9 +2,9 @@
 
 Jake is the foundation for a privacy-first, local-first smart home AI system.
 The intended system will understand household events locally and eventually
-support natural conversation. **Phase 1C adds Jake's own multi-person IoU tracker
-and session-local track IDs to the USB/webcam development preview. Resident
-identity recognition is not implemented.**
+support natural conversation. **Phase 1D adds Jake-owned NumPy Kalman motion
+prediction to multi-person tracking. The IoU baseline remains available; track
+IDs are session-local, not resident identities.**
 
 ## Phase 1 scope
 
@@ -18,7 +18,7 @@ Camera adapter → Frame → PersonDetector → PersonTracker → EventGenerator
 The production package defines immutable data contracts, structural interfaces,
 validated TOML configuration, synchronous pipeline orchestration, and a concrete
 OpenCV camera adapter, replaceable YOLO person detector, and Jake-owned tracker.
-The Phase 1C preview uses `FrameSource → PersonDetector → PersonTracker → display`;
+The tracking preview uses `FrameSource → PersonDetector → PersonTracker → display`;
 event-generation algorithms remain future work. There are no recordings,
 databases, identity recognition algorithms, or background services.
 
@@ -313,10 +313,58 @@ period preserves IDs longer but can keep stale tracks alive; raising the IoU
 threshold rejects weak matches but can fragment tracks. Greedy assignment is
 deterministic, not globally optimal.
 
-Phase 1D is planned to add Kalman motion prediction and a Hungarian assignment
-upgrade behind the same protocol. The isolated matching function is the replacement
-point for assignment. Neither algorithm, nor biometric/household identity, is
-implemented in Phase 1C.
+Phase 1D adds Kalman prediction/correction behind the same protocol, while keeping
+greedy assignment. Hungarian/global assignment is planned for **Phase 1E**.
+
+## Phase 1D: Kalman-assisted tracking
+
+Phase 1C has been physically validated with multiple people. Its ID fragmentation
+during crossings and occlusion is the baseline for this phase. Select the new
+tracker with your existing camera and local YOLO weight setup:
+
+```sh
+uv run --extra detection jake-camera --config config/local.toml --track --tracker kalman
+```
+
+`--track --tracker iou` (or just `--track`) keeps the original baseline. Normal
+labels and controls are unchanged. Add `--debug-tracks` with the Kalman tracker
+to show predicted/measurement boxes plus per-track ID and missed count. No
+OpenCV KalmanFilter, YOLO tracking, or Hungarian assignment is used.
+
+Each track estimates `[cx, cy, w, h, vx, vy, vw, vh]` in normalized coordinates,
+predicts forward before greedy IoU matching, and corrects from matched detections.
+Missed tracks continue moving until their configured expiration. Public boxes
+are bounded; track IDs remain local to the session. Kalman predictions reduce
+some occlusion-related ID losses but cannot guarantee IDs through crossings.
+
+Optional noise overrides (defaults shown):
+
+```toml
+[tracking.kalman]
+process_noise_position = 0.0001
+process_noise_velocity = 0.001
+measurement_noise = 0.001
+initial_position_variance = 0.01
+initial_velocity_variance = 1.0
+```
+
+All are finite positive variances/intensities, not standard deviations. Old
+configuration files use these defaults. dt uses capture timestamps, clamped to
+1 ms–1 s; repeated/backward clocks fall back to 1/30 s. See the
+[Kalman design and diagnostics](docs/kalman-tracking.md) for the matrices,
+noise model, numerical stability, lifecycle, and limitations.
+
+Run the deterministic comparison without a camera, model, GPU, or network:
+
+```sh
+uv run --extra tracking python -m jake.benchmarks
+```
+
+On two uninterrupted trajectories both trackers create two IDs with no switches.
+With a three-frame occlusion, the IoU baseline creates three IDs with one change;
+Kalman keeps two IDs with no changes. This is a synthetic regression comparison,
+not proof of real-world crossing accuracy. The new Kalman path still requires
+physical validation with your webcam.
 
 ## Repository layout
 
@@ -330,6 +378,10 @@ src/jake/
     opencv_camera.py  Context-managed local FrameSource implementation
     yolo_detector.py  Local Ultralytics PersonDetector implementation
     iou_tracker.py   Jake-owned PersonTracker and internal lifecycle state
+    kalman_tracker.py  Motion-aware PersonTracker using Jake's filter
+  kalman.py       Reusable NumPy linear Kalman mathematics
+  motion.py       Constant-velocity box model and dt policy
+  benchmarks.py   Deterministic synthetic tracker comparison
   matching.py     Pure IoU geometry and deterministic greedy assignment
   diagnostics.py  Framework-independent detector timing
   preview.py      Local OpenCV display and development overlay
@@ -438,16 +490,18 @@ are ignored by Git; ignore rules are not an access-control mechanism.
 
 ## Roadmap
 
-The Phase 1 foundation, 1A acquisition, 1B detection, and 1C tracking are implemented.
+The Phase 1 foundation, 1A acquisition, 1B detection, 1C IoU tracking, and 1D
+Kalman-assisted tracking are implemented.
 Phase 1A was physically validated on Windows at approximately 19 FPS, 640×480,
 with advancing sequences and successful shutdown. Phase 1B was also physically
 validated with multiple people and CPU inference fast enough for development.
-Phase 1C requires local tracking validation. The sequence below is a planning
+Phase 1C has been physically validated with multiple people; crossing/occlusion
+ID losses establish the baseline. Phase 1D requires physical validation. The sequence below is a planning
 outline, not a promise that later phases already exist.
 
 | Phase | Planned capabilities |
 | --- | --- |
-| 1 — perception | Foundation, 1A acquisition, 1B detection, and 1C IoU tracking complete; 1D Kalman/Hungarian upgrades and event-generation algorithms remain future work |
+| 1 — perception | Foundation, 1A acquisition, 1B detection, 1C IoU tracking, and 1D Kalman motion prediction complete; 1E Hungarian/global assignment and event-generation algorithms remain future work |
 | 2 — recognition | Resident recognition, frequent visitor recognition, delivery/visitor classification, with consent and identity-data controls |
 | 3 — understanding and memory | Activity recognition, event memory, household behavioral learning, anomaly detection, and governed continual learning |
 | 4 — voice and interaction | Speech recognition, text-to-speech, basic conversational AI, context-aware resident greetings, and daily/event summaries |

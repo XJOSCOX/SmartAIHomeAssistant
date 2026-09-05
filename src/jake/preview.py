@@ -1,5 +1,6 @@
 """Local development display; never imported by the perception core."""
 
+from collections.abc import Callable
 from contextlib import suppress
 from time import perf_counter
 
@@ -9,7 +10,7 @@ from numpy.typing import NDArray
 
 from jake.adapters.opencv_camera import OpenCVCamera
 from jake.config import AppConfig
-from jake.diagnostics import measure_detection
+from jake.diagnostics import TrackDiagnostic, measure_detection
 from jake.domain import FrameContext, PersonDetection, PersonTrack
 from jake.ports import PersonDetector, PersonTracker
 
@@ -42,6 +43,8 @@ def preview(
     config: AppConfig,
     detector: PersonDetector | None = None,
     tracker: PersonTracker | None = None,
+    *,
+    track_diagnostics: Callable[[], tuple[TrackDiagnostic, ...]] | None = None,
 ) -> None:
     """Display frames on the main thread, with no recording or persistence."""
     if tracker is not None and detector is None:
@@ -63,6 +66,8 @@ def preview(
                             measurement.detections,
                         )
                         draw_people(display, tracks)
+                        if track_diagnostics is not None:
+                            draw_track_diagnostics(display, track_diagnostics())
                         cv2.putText(
                             display,
                             f"active tracks {len(tracks)} (includes missed)",
@@ -104,3 +109,32 @@ def preview(
             # an acquisition/display error or interrupt.
             with suppress(cv2.error):
                 cv2.destroyWindow(WINDOW)
+
+
+def draw_track_diagnostics(
+    display: NDArray[np.uint8], diagnostics: tuple[TrackDiagnostic, ...]
+) -> None:
+    """Optional debug rendering: orange predictions, blue measurements, missed counts."""
+    height, width = display.shape[:2]
+    for index, item in enumerate(diagnostics):
+        for box, color in ((item.predicted_box, (0, 165, 255)), (item.measured_box, (255, 0, 0))):
+            if box is not None:
+                cv2.rectangle(
+                    display,
+                    (min(width - 1, int(box.left * width)), min(height - 1, int(box.top * height))),
+                    (
+                        min(width - 1, int(box.right * width)),
+                        min(height - 1, int(box.bottom * height)),
+                    ),
+                    color,
+                    1,
+                )
+        cv2.putText(
+            display,
+            f"ID {item.track_id} | missed {item.missed_frames}",
+            (10, 105 + index * 20),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (0, 165, 255),
+            1,
+        )

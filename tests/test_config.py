@@ -5,6 +5,7 @@ import pytest
 from jake.config import (
     CameraConfig,
     DetectorConfig,
+    KalmanConfig,
     PipelineConfig,
     TrackingConfig,
     load_app_config,
@@ -148,3 +149,28 @@ def test_tracking_defaults_and_valid_boundaries(tmp_path: Path) -> None:
     )
     assert load_app_config(path).tracking == TrackingConfig(1, 0)
     assert load_config(path) == PipelineConfig("test")
+
+
+@pytest.mark.parametrize("name", tuple(KalmanConfig.__dataclass_fields__))
+@pytest.mark.parametrize("value", ["0", "-1", "nan", "inf", "true", '"0.1"'])
+def test_invalid_kalman_noise(tmp_path: Path, name: str, value: str) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        f'[pipeline]\ncamera_id = "test"\n[tracking.kalman]\n{name} = {value}', encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="finite positive"):
+        load_app_config(path)
+
+
+def test_nested_kalman_settings(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        '[pipeline]\ncamera_id = "test"\n[tracking.kalman]\nmeasurement_noise = 0.02',
+        encoding="utf-8",
+    )
+    assert load_app_config(path).tracking.kalman == KalmanConfig(measurement_noise=0.02)
+    path.write_text(
+        '[pipeline]\ncamera_id = "test"\n[tracking.kalman]\nunknown = 1', encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="unknown setting"):
+        load_app_config(path)

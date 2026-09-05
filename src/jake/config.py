@@ -55,9 +55,36 @@ class DetectorConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class KalmanConfig:
+    process_noise_position: float = 0.0001
+    process_noise_velocity: float = 0.001
+    measurement_noise: float = 0.001
+    initial_position_variance: float = 0.01
+    initial_velocity_variance: float = 1.0
+
+    def __post_init__(self) -> None:
+        for name in (
+            "process_noise_position",
+            "process_noise_velocity",
+            "measurement_noise",
+            "initial_position_variance",
+            "initial_velocity_variance",
+        ):
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not isfinite(value)
+                or value <= 0
+            ):
+                raise ValueError(f"tracking.kalman.{name} must be a finite positive number")
+
+
+@dataclass(frozen=True, slots=True)
 class TrackingConfig:
     min_iou: float = 0.3
     max_missed_frames: int = 10
+    kalman: KalmanConfig = KalmanConfig()
 
     def __post_init__(self) -> None:
         threshold = self.min_iou
@@ -117,8 +144,18 @@ def load_app_config(path: Path) -> AppConfig:
         raise ValueError("[detector] permits only model, device, and image_size")
     defaults = DetectorConfig()
     tracking = data.get("tracking", {})
-    if not isinstance(tracking, dict) or set(tracking) - {"min_iou", "max_missed_frames"}:
-        raise ValueError("[tracking] permits only min_iou and max_missed_frames")
+    if not isinstance(tracking, dict) or set(tracking) - {"min_iou", "max_missed_frames", "kalman"}:
+        raise ValueError(
+            "[tracking] permits only min_iou, max_missed_frames, and [tracking.kalman]"
+        )
+    kalman = tracking.get("kalman", {})
+    noise_defaults = KalmanConfig()
+    noise_fields = tuple(KalmanConfig.__dataclass_fields__)
+    if not isinstance(kalman, dict) or set(kalman) - set(noise_fields):
+        raise ValueError("unknown setting or invalid table in [tracking.kalman]")
+    noise_config = KalmanConfig(
+        **{name: kalman.get(name, getattr(noise_defaults, name)) for name in noise_fields}
+    )
     tracking_defaults = TrackingConfig()
     return AppConfig(
         pipeline_config,
@@ -133,5 +170,6 @@ def load_app_config(path: Path) -> AppConfig:
             max_missed_frames=tracking.get(
                 "max_missed_frames", tracking_defaults.max_missed_frames
             ),
+            kalman=noise_config,
         ),
     )

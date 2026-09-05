@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from jake.config import load_app_config
+from jake.ports import PersonTracker
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -15,7 +16,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--track", action="store_true", help="Enable Jake tracking (implies --detect)"
     )
+    parser.add_argument("--tracker", choices=("iou", "kalman"), default="iou")
+    parser.add_argument(
+        "--debug-tracks", action="store_true", help="Show Kalman predictions and misses"
+    )
     args = parser.parse_args(argv)
+    if args.tracker == "kalman" and not args.track:
+        parser.error("--tracker kalman requires --track")
+    if args.debug_tracks and not (args.track and args.tracker == "kalman"):
+        parser.error("--debug-tracks requires --track --tracker kalman")
     try:
         config = load_app_config(args.config)
     except (OSError, ValueError) as exc:
@@ -25,6 +34,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         import cv2
 
         from jake.adapters.iou_tracker import IoUPersonTracker, TrackerError
+        from jake.adapters.kalman_tracker import KalmanPersonTracker
         from jake.adapters.opencv_camera import CameraError
         from jake.adapters.yolo_detector import DetectorError, YoloPersonDetector
         from jake.preview import preview
@@ -37,8 +47,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.detect or args.track
             else None
         )
-        tracker = IoUPersonTracker(config.tracking) if args.track else None
-        preview(config, detector, tracker)
+        tracker: PersonTracker | None = None
+        diagnostics = None
+        if args.track:
+            if args.tracker == "kalman":
+                motion_tracker = KalmanPersonTracker(config.tracking)
+                tracker = motion_tracker
+                if args.debug_tracks:
+                    diagnostics = motion_tracker.diagnostics
+            else:
+                tracker = IoUPersonTracker(config.tracking)
+        preview(config, detector, tracker, track_diagnostics=diagnostics)
     except KeyboardInterrupt:
         print("\nCamera preview stopped.")
         return 0

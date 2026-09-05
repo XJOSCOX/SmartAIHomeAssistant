@@ -3,8 +3,16 @@
 from dataclasses import dataclass
 from time import perf_counter
 
-from jake.domain import Frame, PersonDetection
+from jake.domain import BoundingBox, Frame, PersonDetection
 from jake.ports import PersonDetector
+
+
+@dataclass(frozen=True, slots=True)
+class TrackDiagnostic:
+    track_id: str
+    missed_frames: int
+    predicted_box: BoundingBox
+    measured_box: BoundingBox | None
 
 
 @dataclass(frozen=True, slots=True)
