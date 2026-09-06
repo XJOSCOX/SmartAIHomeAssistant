@@ -3,7 +3,7 @@
 import os
 import sys
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules, copy_metadata
 
 os.environ["YOLO_OFFLINE"] = "true"
 os.environ["YOLO_AUTOINSTALL"] = "false"
@@ -17,10 +17,17 @@ hidden = collect_submodules("jake.adapters") + [
     "ultralytics", "openvino", "keyring.backends.Windows", "tomli_w", "tzdata",
 ]
 data = collect_data_files("ultralytics", includes=["cfg/**/*.yaml"])
+# OpenVINO discovers its IR reader and CPU device plugin dynamically. Import
+# analysis only finds openvino.dll and Python frontend DLLs, leaving model
+# reading/CPU compilation broken even though importing openvino succeeds.
+binaries = collect_dynamic_libs("openvino")
+# Torchvision 0.29 uses _C_stable.pyd (loaded via torch.ops.load_library).
+# Older bundled hooks only request torchvision._C and silently miss NMS.
+binaries += collect_dynamic_libs("torchvision", search_patterns=["*.pyd", "*.dll"])
 for package in ("ultralytics", "openvino", "torch", "jake-home-assistant"):
     data += copy_metadata(package)
 a = Analysis([str(root / "packaging" / "desktop_entry.py")],
-             pathex=[str(root / "src")], binaries=[], datas=data, hiddenimports=hidden,
+             pathex=[str(root / "src")], binaries=binaries, datas=data, hiddenimports=hidden,
              hookspath=[], runtime_hooks=[],
              excludes=["PyQt5", "PyQt6", "PySide2", "tkinter", "IPython", "pytest"],
              noarchive=False)

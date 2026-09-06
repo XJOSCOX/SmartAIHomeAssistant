@@ -1,6 +1,7 @@
 """Windowed desktop entry point. No camera/store opens at launch."""
 
 import argparse
+import json
 import os
 import sys
 from collections.abc import Sequence
@@ -16,11 +17,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Existing development config; relative paths use the working directory",
     )
     parser.add_argument(
+        "--model-smoke-test",
+        type=Path,
+        help="Check local models in this folder using synthetic pixels; no camera or stores",
+    )
+    parser.add_argument("--model-smoke-report", type=Path, help="Write model check status JSON")
+    parser.add_argument(
         "--smoke-test",
         action="store_true",
         help="Offscreen startup/exit; no camera or biometric data access",
     )
     args = parser.parse_args(argv)
+    if args.model_smoke_test is not None or args.model_smoke_report is not None:
+        if args.model_smoke_test is None or args.model_smoke_report is None:
+            parser.error("--model-smoke-test and --model-smoke-report must be used together")
+        from jake.application.model_smoke import check_models
+
+        # Exclusive creation prevents overwriting any existing file.
+        with args.model_smoke_report.open("x", encoding="utf-8") as report:
+            results = check_models(args.model_smoke_test.absolute())
+            json.dump(results, report, indent=2)
+        return 0 if all(value == "OK" for value in results.values()) else 1
     if args.smoke_test:
         os.environ["QT_QPA_PLATFORM"] = "offscreen"
     from PySide6.QtCore import QTimer

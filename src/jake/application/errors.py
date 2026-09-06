@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 
+from jake.appearance import AppearanceError
 from jake.application.settings import MissingModelsError
 
 
@@ -14,6 +15,14 @@ class UIError:
 
 
 def ui_error(error: Exception) -> UIError:
+    if isinstance(error, AppearanceError):
+        return UIError(
+            "Appearance model unavailable",
+            "Jake could not run the appearance model. Check the matching XML and BIN files "
+            "in Settings. The desktop build must include the OpenVINO CPU runtime. "
+            "Resident enrollment uses separate face models and may still work.",
+            "AppearanceError: local appearance runtime failed",
+        )
     if isinstance(error, MissingModelsError):
         files = "\n".join(f"{name}: {path}" for name, path in error.missing)
         return UIError(

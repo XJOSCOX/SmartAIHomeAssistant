@@ -1,4 +1,4 @@
-param([switch]$SmokeTest)
+param([switch]$SmokeTest, [string]$ModelDirectory)
 $ErrorActionPreference = "Stop"
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $buildEnvironment = @{}
@@ -21,6 +21,16 @@ try {
         if (-not $smoke.WaitForExit(60000)) { $smoke.Kill(); throw 'Desktop smoke test timed out' }
         if ($smoke.ExitCode -ne 0) { throw "Desktop smoke failed: $($smoke.ExitCode)" }
         Write-Output 'Jake.exe offscreen startup/exit passed; no camera or store opened.'
+    }
+    if ($ModelDirectory) {
+        $models = (Resolve-Path -LiteralPath $ModelDirectory).Path
+        $report = Join-Path $projectRoot ('build/model-smoke-' + [guid]::NewGuid().ToString() + '.json')
+        $arguments = '--model-smoke-test "' + $models + '" --model-smoke-report "' + $report + '"'
+        $check = Start-Process -FilePath (Join-Path $projectRoot 'dist/Jake/Jake.exe') -ArgumentList $arguments -WindowStyle Hidden -PassThru
+        if (-not $check.WaitForExit(60000)) { $check.Kill(); throw 'Model smoke test timed out' }
+        if (Test-Path -LiteralPath $report) { Get-Content -LiteralPath $report }
+        if ($check.ExitCode -ne 0) { throw "Model smoke failed: $($check.ExitCode)" }
+        Write-Output 'Packaged local model checks passed with synthetic pixels; no camera or store opened.'
     }
 } finally {
     Pop-Location

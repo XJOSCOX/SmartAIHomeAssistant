@@ -148,6 +148,26 @@ Artifacts are Git-ignored. Smoke mode starts hidden/offscreen with temporary set
 constructs all pages, opens no camera/store, and exits. It does not validate physical
 camera, GPU inference, recognition accuracy or vault access. Review before live use.
 
+For release verification with existing local weights, the build script also accepts
+`-ModelDirectory C:\path\to\models`. This runs the packaged executable's
+`--model-smoke-test C:\path\to\models --model-smoke-report C:\path\to\new-report.json`
+check. The folder must contain the standard YOLO11n, retail-0287 XML/BIN, YuNet and
+SFace filenames used by setup. It runs YOLO, appearance encoding and face detection
+on generated blank pixels and loads SFace; it never opens a camera, profile store or
+credential vault. The report contains only stage status and exception class names,
+and refuses to overwrite an existing file. No weights are downloaded.
+
+OpenVINO's IR reader and CPU plugin are dynamically loaded DLLs, so the packaging
+spec explicitly collects OpenVINO runtime libraries. An import-only check does not
+detect missing plugins. Resident enrollment can succeed while Start camera fails
+because enrollment uses OpenCV face models; live tracking additionally uses YOLO
+and OpenVINO appearance inference.
+
+The spec also collects Torchvision's native extensions explicitly. Torchvision 0.29
+loads `_C_stable.pyd` dynamically for NMS; older PyInstaller hooks still look for
+`_C`, producing an `operator torchvision::nms does not exist` failure at the first
+YOLO inference. The synthetic release check exercises this first inference too.
+
 The installer definition targets **Inno Setup 6**, a separate external tool:
 
 ```powershell
@@ -168,11 +188,13 @@ network DLL can be present for Multimedia; Jake exposes no network/cloud functio
 
 ## Implementation validation
 
-- 624 tests passed, including 37 Qt offscreen/application tests; 93% total coverage.
+- 630 tests passed; 93% total coverage.
 - Ruff lint, format check, strict mypy, Python wheel and source distribution passed.
 - Windows PyInstaller windowed EXE build and offscreen startup/exit smoke passed.
+- Packaged YOLO and OpenVINO inference on synthetic pixels, YuNet detection and
+  SFace loading passed with existing local weights; no camera or profiles were accessed.
 - PE subsystem is checked as Windows GUI; no console bootloader is used in release mode.
 - Inno Setup configuration is supplied; its compiler is not installed in this environment,
   so installer compilation has not been performed.
-- No physical camera, model inference, real biometric store, or production key-vault
-  validation was performed. Target-PC live execution remains for after repository review.
+- Physical camera, recognition accuracy, real biometric store and production key-vault
+  checks are separate from the synthetic model release check.
