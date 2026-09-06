@@ -17,12 +17,12 @@ def serialize(data: object) -> bytes:
     return json.dumps(data, allow_nan=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
-def metadata(key_id: str) -> dict[str, object]:
-    return {"version": 2, "algorithm": "AES-256-GCM", "domain": DOMAIN, "key_id": key_id}
+def metadata(key_id: str, domain: str = DOMAIN) -> dict[str, object]:
+    return {"version": 2, "algorithm": "AES-256-GCM", "domain": domain, "key_id": key_id}
 
 
-def encrypt(payload: object, key_id: str, provider: KeyProvider) -> bytes:
-    header = metadata(key_id)
+def encrypt(payload: object, key_id: str, provider: KeyProvider, domain: str = DOMAIN) -> bytes:
+    header = metadata(key_id, domain)
     key = provider.get(key_id)
     if len(key) != 32:
         raise IdentityError("identity encryption requires a 256-bit key")
@@ -37,7 +37,7 @@ def encrypt(payload: object, key_id: str, provider: KeyProvider) -> bytes:
     )
 
 
-def decrypt(data: object, provider: KeyProvider) -> tuple[object, str]:
+def decrypt(data: object, provider: KeyProvider, domain: str = DOMAIN) -> tuple[object, str]:
     try:
         if not isinstance(data, dict) or set(data) != {
             "version",
@@ -51,7 +51,7 @@ def decrypt(data: object, provider: KeyProvider) -> tuple[object, str]:
         key_id = data["key_id"]
         if not isinstance(key_id, str) or str(UUID(key_id)) != key_id:
             raise ValueError("invalid key ID")
-        header = metadata(key_id)
+        header = metadata(key_id, domain)
         if type(data["version"]) is not int or any(data[k] != v for k, v in header.items()):
             raise ValueError("unsupported envelope")
         nonce = base64.b64decode(data["nonce"], validate=True)

@@ -73,3 +73,17 @@ min_sharpness = 80.0
 min_detector_confidence = 0.9
 enrollment_samples = 10
 duplicate_similarity = 0.995
+
+[visitors]
+# Independent opt-in: persistent anonymous face templates, separate from residents.
+enabled = false
+required_observations = 5
+observation_window_seconds = 10.0
+observation_interval_seconds = 0.5
+carry_seconds = 2.0
+# Additional detector confidence floor AFTER all existing face-quality gates pass.
+min_face_quality = 0.95
+match_similarity = 0.70
+ambiguity_margin = 0.10
+recurring_visit_count = 2
+retention_days = 30

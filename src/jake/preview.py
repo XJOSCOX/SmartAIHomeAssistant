@@ -15,6 +15,8 @@ from jake.diagnostics import TrackDiagnostic, measure_detection
 from jake.domain import FrameContext, PersonDetection, PersonEvent, PersonTrack
 from jake.face_identity import FaceIdentityService
 from jake.ports import AppearanceEncoder, EventGenerator, PersonDetector, PersonTracker
+from jake.visitor_domain import VisitorMatch, VisitorState
+from jake.visitors import VisitorMemory
 
 WINDOW = "Jake local camera - q/Q to quit"
 
@@ -51,6 +53,7 @@ def preview(
     event_sink: Callable[[PersonEvent], None] | None = None,
     encoder: AppearanceEncoder | None = None,
     identity: FaceIdentityService | None = None,
+    visitors: VisitorMemory | None = None,
 ) -> None:
     """Display frames on the main thread, with no recording or persistence."""
     if tracker is not None and detector is None:
@@ -61,6 +64,8 @@ def preview(
         raise ValueError("appearance preview requires a tracker")
     if identity is not None and tracker is None:
         raise ValueError("identity preview requires tracking")
+    if visitors is not None and (identity is None or events is None):
+        raise ValueError("visitor preview requires identity and person events")
     with OpenCVCamera(config.pipeline.camera_id, config.camera) as camera:
         try:
             cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
@@ -89,8 +94,25 @@ def preview(
                                 1,
                             )
                         tracks = tracker.update(context, detections)
+                        person_events = events.generate(context, tracks) if events else ()
                         if identity is not None:
                             identities, identity_events = identity.process(frame, tracks)
+                            visitor_matches: dict[str, VisitorMatch] = {}
+                            if visitors is not None:
+                                visitor_matches, visitor_events = visitors.process(
+                                    context,
+                                    tracks,
+                                    person_events,
+                                    identity.visitor_observations,
+                                    identity.visitor_blocked,
+                                    identities,
+                                )
+                                identity.visitor_observations.clear()
+                                for visitor_event in visitor_events:
+                                    print(
+                                        f"{visitor_event.kind} track={visitor_event.track_id} "
+                                        f"state={visitor_event.match.state}"
+                                    )
                             for item in identity_events:
                                 print(
                                     f"{item.kind} track={item.track_id} "
@@ -100,6 +122,18 @@ def preview(
                                 label = (
                                     f"ID {track_id} | {match.display_name or ''} | {match.state}"
                                 )
+                                visitor = visitor_matches.get(track_id)
+                                if visitor and visitor.state != VisitorState.UNKNOWN:
+                                    short_id = (
+                                        (visitor.visitor_id or "")
+                                        if track_diagnostics
+                                        else (visitor.visitor_id or "")[:4].upper()
+                                    )
+                                    label = (
+                                        f"ID {track_id} | "
+                                        f"{visitor.display_name or 'VISITOR ' + short_id} | "
+                                        f"{visitor.state}"
+                                    )
                                 cv2.putText(
                                     display,
                                     label,
@@ -110,7 +144,7 @@ def preview(
                                     1,
                                 )
                         if events is not None and event_sink is not None:
-                            for event in events.generate(context, tracks):
+                            for event in person_events:
                                 event_sink(event)
                         draw_people(display, tuple(t for t in tracks if not t.recently_lost))
                         if track_diagnostics is not None:

@@ -5,7 +5,7 @@ import json
 import os
 import subprocess
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -13,7 +13,7 @@ from pathlib import Path
 from jake.adapters.identity_keys import default_key_provider
 from jake.identity import IdentityError
 from jake.identity_domain import FaceEmbedding, ResidentProfile
-from jake.identity_encryption import decrypt, encrypt
+from jake.identity_encryption import DOMAIN, decrypt, encrypt
 from jake.identity_ports import KeyProvider
 
 
@@ -145,7 +145,14 @@ class LocalIdentityStore:
         return data
 
     def _write(self, profiles: tuple[ResidentProfile, ...], key_id: str) -> None:
-        encrypted = encrypt(self._payload(profiles), key_id, self.provider)
+        self.write_document(self._payload(profiles), key_id, DOMAIN, self._parse)
+
+    def write_document(
+        self, document: object, key_id: str, domain: str, validate: Callable[[object], object]
+    ) -> None:
+        """Shared encrypted-file primitive. Caller holds the writer lock."""
+        expected = validate(document)
+        encrypted = encrypt(document, key_id, self.provider, domain)
         if len(encrypted) > 3_000_000:
             raise IdentityError("encrypted identity store too large")
         descriptor, name = tempfile.mkstemp(prefix=".residents-", dir=self.root)
@@ -157,8 +164,10 @@ class LocalIdentityStore:
                 stream.flush()
                 os.fsync(stream.fileno())
             # Verify the actual encrypted temporary file before replacing any original.
-            payload, verified_id = decrypt(json.loads(temporary.read_bytes()), self.provider)
-            if verified_id != key_id or self._parse(payload) != profiles:
+            payload, verified_id = decrypt(
+                json.loads(temporary.read_bytes()), self.provider, domain
+            )
+            if verified_id != key_id or validate(payload) != expected:
                 raise IdentityError("encrypted identity verification failed")
             self._check_paths()
             os.replace(temporary, self.path)

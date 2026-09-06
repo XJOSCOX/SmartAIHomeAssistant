@@ -8,6 +8,8 @@ from jake.domain import Frame, FrameContext, PersonEvent
 from jake.face_identity import FaceIdentityService
 from jake.identity_domain import IdentityEvent, IdentityMatch
 from jake.ports import AppearanceEncoder, EventGenerator, FrameSource, PersonDetector, PersonTracker
+from jake.visitor_domain import VisitorEvent, VisitorMatch
+from jake.visitors import VisitorMemory
 
 
 class PerceptionPipeline:
@@ -27,6 +29,7 @@ class PerceptionPipeline:
         *,
         encoder: AppearanceEncoder | None = None,
         identity: FaceIdentityService | None = None,
+        visitors: VisitorMemory | None = None,
     ) -> None:
         self._config = config
         self._detector = detector
@@ -34,6 +37,11 @@ class PerceptionPipeline:
         self._events = events
         self._encoder = encoder
         self._identity = identity
+        if visitors is not None and identity is None:
+            raise ValueError("visitor pipeline requires face identity")
+        self._visitors = visitors
+        self.visitor_matches: dict[str, VisitorMatch] = {}
+        self.visitor_events: tuple[VisitorEvent, ...] = ()
         self.identity_matches: dict[str, IdentityMatch] = {}
         self.identity_events: tuple[IdentityEvent, ...] = ()
         self._last_sequence: int | None = None
@@ -54,9 +62,20 @@ class PerceptionPipeline:
         if self._encoder is not None:
             detections = encode_detections(frame, detections, self._encoder)
         tracks = self._tracker.update(context, detections)
+        events = self._events.generate(context, tracks)
         if self._identity is not None:
             self.identity_matches, self.identity_events = self._identity.process(frame, tracks)
-        return self._events.generate(context, tracks)
+            if self._visitors is not None:
+                self.visitor_matches, self.visitor_events = self._visitors.process(
+                    context,
+                    tracks,
+                    events,
+                    self._identity.visitor_observations,
+                    self._identity.visitor_blocked,
+                    self.identity_matches,
+                )
+                self._identity.visitor_observations.clear()
+        return events
 
     def run(self, source: FrameSource) -> Iterator[PersonEvent]:
         """Pull frames on demand. The caller manages source and adapter resources."""

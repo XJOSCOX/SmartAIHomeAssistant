@@ -6,6 +6,7 @@ from math import isfinite
 from pathlib import Path
 
 from jake.identity_config import IdentityConfig
+from jake.visitor_config import VisitorConfig
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,6 +223,7 @@ class AppConfig:
     tracking: TrackingConfig = TrackingConfig()
     events: EventConfig = EventConfig()
     identity: IdentityConfig = IdentityConfig()
+    visitors: VisitorConfig = VisitorConfig()
 
 
 def load_config(path: Path) -> PipelineConfig:
@@ -244,10 +246,11 @@ def load_app_config(path: Path) -> AppConfig:
         "tracking",
         "events",
         "identity",
+        "visitors",
     } or not isinstance(data.get("pipeline"), dict):
         raise ValueError(
             "configuration requires [pipeline] and permits "
-            "[camera], [detector], [tracking], [events], [identity]"
+            "[camera], [detector], [tracking], [events], [identity], [visitors]"
         )
     pipeline = data["pipeline"]
     if set(pipeline) - {"camera_id", "min_person_confidence"}:
@@ -304,6 +307,9 @@ def load_app_config(path: Path) -> AppConfig:
     if not isinstance(events, dict) or set(events) - {"present_interval_seconds"}:
         raise ValueError("[events] permits only present_interval_seconds")
     identity = data.get("identity", {})
+    visitors = data.get("visitors", {})
+    if not isinstance(visitors, dict) or set(visitors) - set(VisitorConfig.__dataclass_fields__):
+        raise ValueError("unknown setting or invalid table in [visitors]")
     if not isinstance(identity, dict) or set(identity) - set(IdentityConfig.__dataclass_fields__):
         raise ValueError("unknown setting or invalid table in [identity]")
     return AppConfig(
@@ -336,4 +342,5 @@ def load_app_config(path: Path) -> AppConfig:
         ),
         EventConfig(present_interval_seconds=events.get("present_interval_seconds", 5.0)),
         IdentityConfig(**identity),
+        VisitorConfig(**visitors),
     )

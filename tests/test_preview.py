@@ -491,3 +491,42 @@ def test_identity_cli_wiring(
     labels = [call.args[1] for call in desktop["putText"].call_args_list]
     assert "ID 7 | Joseph | RESIDENT" in labels
     desktop["capture"].release.assert_called_once()
+
+
+def test_visitor_cli_opt_in_and_preview(
+    desktop: dict[str, Mock],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jake.identity_domain import IdentityMatch, IdentityState
+    from jake.visitor_domain import VisitorMatch, VisitorState
+
+    detector, identity, visitors = Mock(), Mock(), Mock()
+    detector.return_value.detect.return_value = ()
+    identity.return_value.process.return_value = ({"7": IdentityMatch(IdentityState.UNKNOWN)}, ())
+    identity.return_value.visitor_observations = {}
+    visitors.return_value.process.return_value = (
+        {
+            "7": VisitorMatch(
+                VisitorState.RECURRING_VISITOR, "7a310000-0000-0000-0000-000000000001", 2
+            )
+        },
+        (),
+    )
+    monkeypatch.setattr("jake.adapters.yolo_detector.YoloPersonDetector", detector)
+    monkeypatch.setattr("jake.adapters.opencv_faces.YuNetFaceDetector", Mock())
+    monkeypatch.setattr("jake.adapters.opencv_faces.SFaceEncoder", Mock())
+    monkeypatch.setattr("jake.face_identity.FaceIdentityService", identity)
+    monkeypatch.setattr("jake.visitors.VisitorMemory", visitors)
+    path = tmp_path / "config.toml"
+    path.write_text('[pipeline]\ncamera_id="test"', encoding="utf-8")
+    assert main(["--config", str(path), "--visitors"]) == 2
+    assert main(["--config", str(path), "--track", "--visitors"]) == 0
+    assert identity.call_args.kwargs["collect_visitors"] is True
+    assert visitors.call_args.args[0].enabled is True
+    labels = [call.args[1] for call in desktop["putText"].call_args_list]
+    assert "ID 7 | VISITOR 7A31 | RECURRING_VISITOR" in labels
+    assert not any("7a310000-" in label for label in labels)
+    visitors.reset_mock()
+    assert main(["--config", str(path), "--track", "--no-visitors"]) == 0
+    visitors.assert_not_called()

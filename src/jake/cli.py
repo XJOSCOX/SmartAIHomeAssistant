@@ -42,6 +42,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--identity", action="store_true", help="Enable enrolled local face identity"
     )
+    parser.add_argument(
+        "--visitors",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Opt in to encrypted anonymous visitor memory (requires --track)",
+    )
     args = parser.parse_args(argv)
     if args.identity and not args.track:
         parser.error("--identity requires --track")
@@ -57,6 +63,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--debug-tracks requires --track --tracker kalman")
     try:
         config = load_app_config(args.config)
+        if args.visitors is not None:
+            config = replace(config, visitors=replace(config.visitors, enabled=args.visitors))
+        if config.visitors.enabled:
+            if not args.track:
+                raise ValueError("visitor memory requires --track")
+            args.identity = True
         if args.reid is not None:
             config = replace(
                 config,
@@ -126,6 +138,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             else:
                 tracker = IoUPersonTracker(config.tracking)
         identity = None
+        visitors = None
         if args.identity:
             from jake.adapters.local_identity_store import LocalIdentityStore
             from jake.adapters.opencv_faces import SFaceEncoder, YuNetFaceDetector, face_quality
@@ -137,16 +150,33 @@ def main(argv: Sequence[str] | None = None) -> int:
                 SFaceEncoder(config.identity),
                 LocalIdentityStore(Path(config.identity.store_path)),
                 face_quality,
+                collect_visitors=config.visitors.enabled,
             )
+            if config.visitors.enabled:
+                from jake.adapters.visitor_store import EncryptedVisitorStore
+                from jake.visitors import VisitorMemory
+
+                visitors = VisitorMemory(
+                    config.visitors,
+                    EncryptedVisitorStore(Path(config.identity.store_path)),
+                    is_nonresident=identity.confidently_nonresident,
+                )
         preview(
             config,
             detector,
             tracker,
             track_diagnostics=diagnostics,
-            events=PersonEventGenerator(config.events) if args.events else None,
-            event_sink=log_event if args.events else None,
+            events=PersonEventGenerator(config.events)
+            if args.events or visitors is not None
+            else None,
+            event_sink=log_event
+            if args.events
+            else (lambda _: None)
+            if visitors is not None
+            else None,
             encoder=encoder,
             identity=identity,
+            visitors=visitors,
         )
     except KeyboardInterrupt:
         print("\nCamera preview stopped.")

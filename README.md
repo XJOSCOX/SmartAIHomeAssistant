@@ -2,8 +2,8 @@
 
 Jake is the foundation for a privacy-first, local-first smart home AI system.
 The intended system will understand household events locally and eventually
-support natural conversation. **Phase 2C encrypts enrolled resident payloads using
-AES-256-GCM and OS-protected keys, preserving Phase 2B face identity and body ReID.
+support natural conversation. **Phase 2D adds opt-in anonymous recurring visitor memory,
+separate from enrolled residents, with encrypted templates and retention controls.
 All tracker modes remain available; track IDs are session-local, not resident identities.**
 
 ## Phase 1 scope
@@ -51,6 +51,27 @@ Migration command for after repository review (no camera required):
 ```sh
 uv run --extra identity jake-enroll-resident --config config/local.toml --migrate-store
 ```
+
+## Phase 2D visitor memory
+
+Phase 2D visitor persistence defaults **off**. It requires five quality-approved,
+confidently non-resident face observations, never just an UNKNOWN frame. Visits follow
+semantic ENTERED/LEFT events, with body ReID preserving the same visit. Resident
+ambiguity blocks visitor learning; names require explicit operator labeling.
+See [visitor memory design and management](docs/visitor-memory.md) for thresholds,
+retention, consent considerations, statistics, encryption, and deletion limitations.
+Existing encrypted resident stores require no migration or rewrite.
+
+Future live command, after repository review and existing local model setup:
+
+```sh
+uv run --extra identity --extra detection --extra appearance jake-camera --config config/local.toml --track --tracker kalman --assignment hungarian --appearance --reid --events --identity --visitors
+```
+
+The visitor store is `.jake-identities/visitors.json` by default. It has a separate
+key and authenticated domain from residents. Use `--no-visitors` to override an
+enabled configuration. Stopping persistence does not delete existing templates;
+explicit list, label, delete, and delete-all commands are documented in the guide.
 
 ## Development
 
@@ -735,7 +756,7 @@ awaits physical validation. The sequence below is a planning outline.
 | Phase | Planned capabilities |
 | --- | --- |
 | 1 — perception | Foundation through 1G track stabilization implemented |
-| 2 — recognition | 2A/2A.1 body continuity, 2B resident face identity, and 2C encrypted template storage implemented; visitor capabilities remain separately scoped |
+| 2 — recognition | 2A/2A.1 body continuity, 2B resident identity, 2C encrypted storage, and 2D opt-in anonymous recurring visitor memory implemented; no automatic naming or visitor classification |
 | 3 — understanding and memory | Activity recognition, event memory, household behavioral learning, anomaly detection, and governed continual learning |
 | 4 — voice and interaction | Speech recognition, text-to-speech, basic conversational AI, context-aware resident greetings, and daily/event summaries |
 | 5 — multiple hubs | Privacy-preserving context coordination and conversational handoff between household hubs |

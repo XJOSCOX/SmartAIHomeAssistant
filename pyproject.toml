@@ -21,6 +21,7 @@ identity = ["cryptography==50.0.1", "keyring==25.7.0"]
 [project.scripts]
 jake-camera = "jake.cli:main"
 jake-enroll-resident = "jake.enroll_cli:main"
+jake-visitors = "jake.visitor_cli:main"
 
 [dependency-groups]
 dev = ["pytest>=8.3,<10", "pytest-cov>=6,<8", "mypy>=1.15,<2", "ruff>=0.11,<1", "cryptography==50.0.1", "keyring==25.7.0"]
