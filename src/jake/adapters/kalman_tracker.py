@@ -26,6 +26,7 @@ from jake.motion import (
     transition_matrix,
 )
 from jake.motion_matching import assign_motion_boxes
+from jake.reid_matching import assign_recent
 
 
 class TrackState(StrEnum):
@@ -33,6 +34,7 @@ class TrackState(StrEnum):
     CONFIRMED = "CONFIRMED"
     LOST = "LOST"
     EXPIRED = "EXPIRED"
+    RECENTLY_LOST = "RECENTLY_LOST"
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +54,9 @@ class _MotionTrack:
     appearance: AppearanceEmbedding | None = field(default=None, repr=False)
     appearance_at: datetime | None = None
     appearance_similarity: float | None = None
+    confirmed_at: datetime | None = None
+    last_observed_box: BoundingBox | None = None
+    reactivated: bool = False
 
 
 class KalmanPersonTracker:
@@ -63,16 +68,31 @@ class KalmanPersonTracker:
     """
 
     def __init__(
-        self, config: TrackingConfig, *, stabilized: bool = False, appearance: bool = False
+        self,
+        config: TrackingConfig,
+        *,
+        stabilized: bool = False,
+        appearance: bool = False,
+        reid: bool = False,
     ) -> None:
         self._config = config
         self._stabilized = stabilized
         self._use_appearance = appearance
+        self._use_reid = reid
+        self._last_reid_ms = 0.0
         self._embedding_dimension: int | None = None
         self._tracks: tuple[_MotionTrack, ...] = ()
         self._last_context: FrameContext | None = None
         self._next_id = 1
         self._last_assignment_ms = 0.0
+
+    @property
+    def recently_lost_count(self) -> int:
+        return sum(t.lifecycle == TrackState.RECENTLY_LOST for t in self._tracks)
+
+    @property
+    def last_reid_ms(self) -> float:
+        return self._last_reid_ms
 
     @property
     def last_assignment_ms(self) -> float:
@@ -86,7 +106,9 @@ class KalmanPersonTracker:
                 t.missed_frames,
                 t.predicted_box,
                 t.measured_box,
-                lifecycle=t.lifecycle.value if self._stabilized else None,
+                lifecycle=("REACTIVATED" if t.reactivated else t.lifecycle.value)
+                if self._stabilized
+                else None,
                 visible_hits=t.visible_frames,
                 confirmation_hits=self._config.confirmation_hits,
                 missed_seconds=(
@@ -121,13 +143,14 @@ class KalmanPersonTracker:
                     raise TrackerError("appearance embedding dimension changed within session")
                 dimension = length
         try:
-            tracks, next_id, assignment_ms = self._advance(context, detections)
+            tracks, next_id, assignment_ms, reid_ms = self._advance(context, detections)
         except (KalmanError, AssignmentError, AppearanceError, np.linalg.LinAlgError) as exc:
             raise TrackerError(
                 "Kalman tracking update failed; session state was preserved"
             ) from exc
         self._tracks, self._next_id, self._last_context = tracks, next_id, context
         self._last_assignment_ms = assignment_ms
+        self._last_reid_ms = reid_ms
         self._embedding_dimension = dimension
         return tuple(
             PersonTrack(
@@ -136,13 +159,14 @@ class KalmanPersonTracker:
                 t.confidence,
                 t.missed_frames,
                 t.lifecycle != TrackState.TENTATIVE,
+                t.lifecycle == TrackState.RECENTLY_LOST,
             )
             for t in tracks
         )
 
     def _advance(
         self, context: FrameContext, detections: tuple[PersonDetection, ...]
-    ) -> tuple[tuple[_MotionTrack, ...], int, float]:
+    ) -> tuple[tuple[_MotionTrack, ...], int, float, float]:
         noise = self._config.kalman
         dt = frame_dt(self._last_context, context)
         transition, process = transition_matrix(dt), process_noise(noise, dt)
@@ -156,8 +180,17 @@ class KalmanPersonTracker:
                 > self._config.max_missed_seconds
             ):
                 # Expire before association: late detections cannot resurrect an old ID.
-                track = replace(track, lifecycle=TrackState.EXPIRED)
-                continue
+                gap = (
+                    context.captured_at.astimezone(UTC) - track.last_seen_at.astimezone(UTC)
+                ).total_seconds()
+                if (
+                    self._use_reid
+                    and track.lifecycle != TrackState.TENTATIVE
+                    and gap <= self._config.reid.window_seconds
+                ):
+                    track = replace(track, lifecycle=TrackState.RECENTLY_LOST)
+                else:
+                    continue
             if (
                 self._use_appearance
                 and track.appearance_at is not None
@@ -177,17 +210,22 @@ class KalmanPersonTracker:
                     predicted_box=box,
                     measured_box=None,
                     appearance_similarity=None,
+                    reactivated=False,
                     age_frames=track.age_frames + 1,
                 )
             )
         assignment_start = perf_counter()
-        track_boxes = tuple(t.predicted_box for t in predicted)
+        active_indices = [
+            i for i, t in enumerate(predicted) if t.lifecycle != TrackState.RECENTLY_LOST
+        ]
+        active = [predicted[i] for i in active_indices]
+        track_boxes = tuple(t.predicted_box for t in active)
         detection_boxes = tuple(d.box for d in detections)
         matches = dict(
             assign_appearance_boxes(
                 track_boxes,
                 detection_boxes,
-                tuple(t.appearance for t in predicted),
+                tuple(t.appearance for t in active),
                 tuple(d.appearance for d in detections),
                 self._config,
             )
@@ -198,7 +236,26 @@ class KalmanPersonTracker:
                 track_boxes, detection_boxes, self._config.min_iou, self._config.assignment
             )
         )
+        matches = {active_indices[i]: j for i, j in matches.items()}
         assignment_ms = (perf_counter() - assignment_start) * 1000
+        reid_ms = 0.0
+        if self._use_reid:
+            reid_start = perf_counter()
+            recent_indices = [
+                i for i, t in enumerate(predicted) if t.lifecycle == TrackState.RECENTLY_LOST
+            ]
+            available = [j for j in range(len(detections)) if j not in matches.values()]
+            recent = [predicted[i] for i in recent_indices]
+            for i, j in assign_recent(
+                tuple(t.predicted_box for t in recent),
+                tuple(t.last_observed_box or t.box for t in recent),
+                tuple(t.appearance for t in recent),
+                tuple(detections[j] for j in available),
+                self._config.reid,
+                self._config.assignment,
+            ):
+                matches[recent_indices[i]] = available[j]
+            reid_ms = (perf_counter() - reid_start) * 1000
         updated = []
         for index, track in enumerate(predicted):
             if index in matches:
@@ -220,6 +277,14 @@ class KalmanPersonTracker:
                     replace(
                         track,
                         appearance=appearance,
+                        last_observed_box=detection.box,
+                        confirmed_at=track.confirmed_at
+                        or (
+                            context.captured_at
+                            if track.visible_frames + 1 >= self._config.confirmation_hits
+                            else None
+                        ),
+                        reactivated=track.lifecycle == TrackState.RECENTLY_LOST,
                         appearance_at=context.captured_at if self._use_appearance else None,
                         appearance_similarity=similarity,
                         motion=motion,
@@ -242,7 +307,9 @@ class KalmanPersonTracker:
                     replace(
                         track,
                         missed_frames=track.missed_frames + 1,
-                        lifecycle=TrackState.LOST
+                        lifecycle=TrackState.RECENTLY_LOST
+                        if track.lifecycle == TrackState.RECENTLY_LOST
+                        else TrackState.LOST
                         if track.lifecycle != TrackState.TENTATIVE
                         else TrackState.TENTATIVE,
                     )
@@ -264,12 +331,16 @@ class KalmanPersonTracker:
                         lifecycle=TrackState.TENTATIVE
                         if self._stabilized and self._config.confirmation_hits > 1
                         else TrackState.CONFIRMED,
+                        last_observed_box=detection.box,
+                        confirmed_at=context.captured_at
+                        if not self._stabilized or self._config.confirmation_hits == 1
+                        else None,
                         appearance=detection.appearance if self._use_appearance else None,
                         appearance_at=context.captured_at if self._use_appearance else None,
                     )
                 )
                 next_id += 1
-        return tuple(updated), next_id, assignment_ms
+        return tuple(updated), next_id, assignment_ms, reid_ms
 
 
 class StabilizedKalmanPersonTracker(KalmanPersonTracker):
@@ -284,3 +355,12 @@ class AppearanceKalmanPersonTracker(KalmanPersonTracker):
 
     def __init__(self, config: TrackingConfig) -> None:
         super().__init__(config, stabilized=True, appearance=True)
+
+
+class RecentlyLostPersonTracker(KalmanPersonTracker):
+    """Appearance tracker retaining confirmed IDs through a bounded ReID window."""
+
+    def __init__(self, config: TrackingConfig) -> None:
+        if config.reid.window_seconds <= config.max_missed_seconds:
+            raise ValueError("ReID window must exceed active retention")
+        super().__init__(config, stabilized=True, appearance=True, reid=True)

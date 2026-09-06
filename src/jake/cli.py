@@ -32,6 +32,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=None,
         help="Enable short-term local appearance encoding with --track --tracker kalman",
     )
+    parser.add_argument(
+        "--reid",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Retain recently-lost appearance tracks",
+    )
     args = parser.parse_args(argv)
     if args.appearance is True and not (args.track and args.tracker == "kalman"):
         parser.error("--appearance requires --track --tracker kalman")
@@ -45,6 +51,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--debug-tracks requires --track --tracker kalman")
     try:
         config = load_app_config(args.config)
+        if args.reid is not None:
+            config = replace(
+                config,
+                tracking=replace(
+                    config.tracking, reid=replace(config.tracking.reid, enabled=args.reid)
+                ),
+            )
+        if args.reid is True and not (
+            args.track and args.tracker == "kalman" and args.appearance is not False
+        ):
+            raise ValueError("--reid requires --track --tracker kalman and appearance")
+        if args.reid is True and args.appearance is None:
+            args.appearance = True
         if args.appearance is not None:
             config = replace(
                 config,
@@ -91,6 +110,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
                     encoder = OpenVINOAppearanceEncoder(config.tracking.appearance)
                     motion_tracker = AppearanceKalmanPersonTracker(config.tracking)
+                    if config.tracking.reid.enabled:
+                        from jake.adapters.kalman_tracker import RecentlyLostPersonTracker
+
+                        motion_tracker = RecentlyLostPersonTracker(config.tracking)
                 tracker = motion_tracker
                 if args.debug_tracks:
                     diagnostics = motion_tracker.diagnostics

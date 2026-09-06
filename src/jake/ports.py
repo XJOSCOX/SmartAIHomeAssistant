@@ -36,7 +36,8 @@ class PersonDetector(Protocol):
 class PersonTracker(Protocol):
     """Maintains IDs within one camera session, including empty detection updates.
 
-    Output is the complete active track set, including missed tracks with their
+    Output is the complete unexpired lifecycle set, including recently-lost pool
+    snapshots so event history stays open, and missed tracks with their
     missed_frames count. confirmed marks eligibility for semantic entry; current
     baseline trackers confirm on the first detection; stabilized trackers require hits.
     IDs must never be reused.

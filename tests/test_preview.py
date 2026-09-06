@@ -418,3 +418,51 @@ def test_appearance_error_cleanup_and_option_validation(
     assert main(["--config", str(path), "--track", "--tracker", "kalman", "--appearance"]) == 1
     desktop["capture"].release.assert_called_once()
     desktop["destroyWindow"].assert_called_once()
+
+
+def test_recently_lost_debug_and_hidden_boxes(
+    desktop: dict[str, Mock], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from jake.diagnostics import TrackDiagnostic
+    from jake.domain import PersonTrack
+    from jake.preview import draw_track_diagnostics
+
+    box = BoundingBox(0.1, 0.2, 0.3, 0.7)
+    rectangle = Mock()
+    monkeypatch.setattr(cv2, "rectangle", rectangle)
+    detector, tracker = Mock(), Mock()
+    detector.detect.return_value = ()
+    tracker.update.return_value = (PersonTrack("7", box, 0.9, 3, True, True),)
+    preview(AppConfig(PipelineConfig("test")), detector, tracker)
+    rectangle.assert_not_called()
+    draw_track_diagnostics(
+        np.zeros((40, 80, 3), dtype=np.uint8),
+        (
+            TrackDiagnostic("7", 3, box, None, lifecycle="RECENTLY_LOST", missed_seconds=2.1),
+            TrackDiagnostic("8", 0, box, box, lifecycle="REACTIVATED", appearance_similarity=0.91),
+        ),
+    )
+    labels = [call.args[1] for call in desktop["putText"].call_args_list]
+    assert "RECENTLY_LOST ID 7 age=2.1s" in labels
+    assert "REACTIVATED ID 8 | app 0.91" in labels
+    assert rectangle.call_count == 2
+
+
+@pytest.mark.parametrize("flag", ["--reid", "--no-reid"])
+def test_reid_cli_selection(
+    desktop: dict[str, Mock], tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flag: str
+) -> None:
+    detector, encoder, tracker_factory = Mock(), Mock(), Mock()
+    detector.return_value.detect.return_value = ()
+    tracker_factory.return_value.update.return_value = ()
+    monkeypatch.setattr("jake.adapters.yolo_detector.YoloPersonDetector", detector)
+    monkeypatch.setattr("jake.adapters.openvino_appearance.OpenVINOAppearanceEncoder", encoder)
+    monkeypatch.setattr("jake.adapters.kalman_tracker.RecentlyLostPersonTracker", tracker_factory)
+    path = tmp_path / "config.toml"
+    path.write_text(
+        '[pipeline]\ncamera_id="test"\n[tracking.appearance]\nenabled=true\n[tracking.reid]\nenabled=true',
+        encoding="utf-8",
+    )
+    assert main(["--config", str(path), "--track", "--tracker", "kalman", flag]) == 0
+    assert tracker_factory.call_count == int(flag == "--reid")
+    assert main(["--config", str(path), "--reid"]) == 2

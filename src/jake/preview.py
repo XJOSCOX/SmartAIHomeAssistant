@@ -88,7 +88,7 @@ def preview(
                         if events is not None and event_sink is not None:
                             for event in events.generate(context, tracks):
                                 event_sink(event)
-                        draw_people(display, tracks)
+                        draw_people(display, tuple(t for t in tracks if not t.recently_lost))
                         if track_diagnostics is not None:
                             cv2.putText(
                                 display,
@@ -102,7 +102,8 @@ def preview(
                             draw_track_diagnostics(display, track_diagnostics())
                         cv2.putText(
                             display,
-                            f"active tracks {len(tracks)} (includes missed)",
+                            f"active tracks {sum(not t.recently_lost for t in tracks)} "
+                            "(includes missed)",
                             (10, 80),
                             cv2.FONT_HERSHEY_SIMPLEX,
                             0.5,
@@ -149,7 +150,11 @@ def draw_track_diagnostics(
     """Optional debug rendering: orange predictions, blue measurements, missed counts."""
     height, width = display.shape[:2]
     for index, item in enumerate(diagnostics):
-        for box, color in ((item.predicted_box, (0, 165, 255)), (item.measured_box, (255, 0, 0))):
+        for box, color in (
+            ()
+            if item.lifecycle == "RECENTLY_LOST"
+            else ((item.predicted_box, (0, 165, 255)), (item.measured_box, (255, 0, 0)))
+        ):
             if box is not None:
                 cv2.rectangle(
                     display,
@@ -168,6 +173,10 @@ def draw_track_diagnostics(
                 label += f" {item.visible_hits}/{item.confirmation_hits}"
             elif item.lifecycle == "LOST":
                 label += f" {item.missed_seconds:.1f}s"
+        if item.lifecycle == "RECENTLY_LOST":
+            label = f"RECENTLY_LOST ID {item.track_id} age={item.missed_seconds:.1f}s"
+        if item.lifecycle == "REACTIVATED":
+            label = f"REACTIVATED ID {item.track_id}"
         if item.appearance_similarity is not None:
             label += f" | app {item.appearance_similarity:.2f}"
         cv2.putText(

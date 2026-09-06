@@ -118,6 +118,37 @@ class AppearanceConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class ReidConfig:
+    enabled: bool = False
+    window_seconds: float = 5.0
+    min_similarity: float = 0.65
+    max_center_distance: float = 0.30
+    appearance_weight: float = 0.7
+    motion_weight: float = 0.3
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise ValueError("reid.enabled must be a boolean")
+        for name in (
+            "window_seconds",
+            "min_similarity",
+            "max_center_distance",
+            "appearance_weight",
+            "motion_weight",
+        ):
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not isfinite(value)
+                or value <= 0
+            ):
+                raise ValueError(f"reid.{name} must be finite and positive")
+            if name != "window_seconds" and value > 1:
+                raise ValueError(f"reid.{name} must be at most 1")
+
+
+@dataclass(frozen=True, slots=True)
 class TrackingConfig:
     min_iou: float = 0.3
     max_missed_frames: int = 10
@@ -129,6 +160,7 @@ class TrackingConfig:
     iou_weight: float = 0.6
     distance_weight: float = 0.4
     appearance: AppearanceConfig = AppearanceConfig()
+    reid: ReidConfig = ReidConfig()
 
     def __post_init__(self) -> None:
         if not isinstance(self.assignment, str) or self.assignment not in {"greedy", "hungarian"}:
@@ -150,6 +182,8 @@ class TrackingConfig:
                 raise ValueError(f"tracking.{name} must be finite and positive")
         if self.max_center_distance > 1 or self.iou_weight > 1 or self.distance_weight > 1:
             raise ValueError("tracking distance gate and weights must be at most 1")
+        if self.reid.enabled and self.reid.window_seconds <= self.max_missed_seconds:
+            raise ValueError("reid.window_seconds must exceed tracking.max_missed_seconds")
         threshold = self.min_iou
         if (
             isinstance(threshold, bool)
@@ -229,6 +263,7 @@ def load_app_config(path: Path) -> AppConfig:
         "max_missed_frames",
         "kalman",
         "appearance",
+        "reid",
         "assignment",
         "confirmation_hits",
         "max_missed_seconds",
@@ -252,6 +287,10 @@ def load_app_config(path: Path) -> AppConfig:
     if not isinstance(appearance, dict) or set(appearance) - set(appearance_fields):
         raise ValueError("unknown setting or invalid table in [tracking.appearance]")
     appearance_config = AppearanceConfig(**appearance)
+    reid = tracking.get("reid", {})
+    if not isinstance(reid, dict) or set(reid) - set(ReidConfig.__dataclass_fields__):
+        raise ValueError("unknown setting or invalid table in [tracking.reid]")
+    reid_config = ReidConfig(**reid)
     tracking_defaults = TrackingConfig()
     events = data.get("events", {})
     if not isinstance(events, dict) or set(events) - {"present_interval_seconds"}:
@@ -271,6 +310,7 @@ def load_app_config(path: Path) -> AppConfig:
             ),
             kalman=noise_config,
             appearance=appearance_config,
+            reid=reid_config,
             assignment=tracking.get("assignment", tracking_defaults.assignment),
             **{
                 name: tracking.get(name, getattr(tracking_defaults, name))

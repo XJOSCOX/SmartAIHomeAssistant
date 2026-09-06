@@ -2,7 +2,7 @@
 
 Jake is the foundation for a privacy-first, local-first smart home AI system.
 The intended system will understand household events locally and eventually
-support natural conversation. **Phase 2A adds optional short-term appearance-assisted tracking.
+support natural conversation. **Phase 2A.1 adds recently-lost re-identification with continuous person events.
 All tracker modes remain available; track IDs are session-local, not resident identities.**
 
 ## Phase 1 scope
@@ -517,6 +517,35 @@ real encoder accuracy; live pretrained-model validation remains pending. See the
 [appearance design](docs/appearance-tracking.md) for model contract, cosine/EMA,
 weights, gating, benchmark definitions, and limitations.
 
+## Phase 2A.1: recently-lost re-identification
+
+Confirmed appearance tracks can now remain in a recently-lost pool after normal
+active retention. Strong appearance plus plausible motion can reactivate the same
+ID within five seconds of its last observation. Event history stays open: no
+premature LEFT or second ENTERED, and duration continues from original confirmation.
+Final timeout produces one LEFT. Tentative tracks do not enter the pool.
+
+With existing Phase 2A weights installed:
+
+```powershell
+uv run --extra detection --extra appearance jake-camera --config config/local.toml --track --tracker kalman --assignment hungarian --appearance --reid --events --debug-tracks
+```
+
+Use `--no-reid` for the previous appearance baseline. The new example configuration
+contains `[tracking.reid] enabled = true`; existing files without it remain disabled.
+Debug text shows RECENTLY_LOST age and REACTIVATED similarity. Normal preview hides
+pool boxes. All vectors remain in memory, subject to the existing appearance-age cap.
+
+```sh
+uv run --extra tracking python -m jake.reid_benchmark
+```
+
+Six synthetic sessions produced 14/7 IDs and 14/7 ENTERED/LEFT counts for baseline
+versus ReID, with 6/0 switches and fragmentation. One same-clothing impostor case
+falsely reactivated an ID, compared with none in the baseline. This is continuity
+assistance, not verified identity. See [recently-lost lifecycle and design](docs/recently-lost.md)
+for the exact time window, formula, migration, metric definitions, and limitations.
+
 ## Repository layout
 
 ```text
@@ -543,6 +572,8 @@ src/jake/
   appearance.py    Unit-vector math and encoder orchestration
   appearance_matching.py  Spatial and appearance cost policy
   appearance_benchmark.py  Synthetic continuity comparison
+  reid_matching.py  Recently-lost appearance/spatial association
+  reid_benchmark.py  Re-entry and event-continuity comparison
   event_console.py  Opt-in semantic event console formatting
   preview.py      Local OpenCV display and development overlay
   cli.py          jake-camera entry point

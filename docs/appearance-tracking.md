@@ -5,6 +5,10 @@ not recognize faces, assign resident names, remember visitors, or establish a
 long-term identity. Clothing and pose are temporary evidence for track continuity.
 No training, database, cloud inference, image persistence, or later-phase AI is added.
 
+Phase 2A.1 optionally extends unexpired confirmed tracks through a recently-lost
+pool. The active-retention expiration described here remains the `--no-reid`
+baseline. See [recently-lost design](recently-lost.md) for continuous events and timing.
+
 ## Architecture and model
 
 `AppearanceEncoder.encode(Frame, BoundingBox)` returns an immutable, L2-normalized
