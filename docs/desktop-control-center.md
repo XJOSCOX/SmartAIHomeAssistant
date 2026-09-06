@@ -15,7 +15,11 @@ uv run --extra desktop --extra detection --extra appearance --extra identity jak
 Without `--config`, Windows uses `%LOCALAPPDATA%/Jake/config/jake.toml` and shows setup
 if it is absent. No camera starts automatically. Setup collects an IANA timezone,
 camera selection, model paths and visitor persistence preference. Selected runtime
-model files must exist before setup saves. Cancelling leaves setup unsaved. Resident
+model files must exist before setup saves. The new AppData models folder starts empty.
+Use **Use existing model folder…** to select an existing repository `models` directory;
+this updates model paths only, without copying files or changing the biometric-store
+location. Missing-file messages list every required model path, including the appearance
+BIN companion, instead of suggesting a Python dependency failure. Cancelling leaves setup unsaved. Resident
 enrollment is optional. No downloads, biometric imports or migrations run in setup.
 
 Qt is optional: the `desktop` extra locks PySide6 6.11.2 and includes `tomli-w` for
@@ -164,7 +168,7 @@ network DLL can be present for Multimedia; Jake exposes no network/cloud functio
 
 ## Implementation validation
 
-- 619 tests passed, including 32 Qt offscreen/application tests; 93% total coverage.
+- 624 tests passed, including 37 Qt offscreen/application tests; 93% total coverage.
 - Ruff lint, format check, strict mypy, Python wheel and source distribution passed.
 - Windows PyInstaller windowed EXE build and offscreen startup/exit smoke passed.
 - PE subsystem is checked as Windows GUI; no console bootloader is used in release mode.

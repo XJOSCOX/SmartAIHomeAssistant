@@ -513,3 +513,82 @@ def test_first_run_saves_and_refreshes_editor(
     window.first_run()
     assert load_app_config(window.path).home.timezone == "America/Chicago"
     assert window.settings.timezone.text() == "America/Chicago"
+
+
+def test_missing_models_lists_all_enabled_files(config: AppConfig) -> None:
+    from jake.application.settings import MissingModelsError
+
+    enabled = replace(
+        config,
+        identity=replace(config.identity, enabled=True),
+        tracking=replace(
+            config.tracking, appearance=replace(config.tracking.appearance, enabled=True)
+        ),
+    )
+    with pytest.raises(MissingModelsError) as caught:
+        validate_models(enabled)
+    assert [name for name, _ in caught.value.missing] == [
+        "YOLO",
+        "Appearance XML",
+        "Appearance BIN",
+        "YuNet",
+        "SFace",
+    ]
+    error = ui_error(caught.value)
+    assert error.title == "Required model files not found"
+    assert all(path in error.message for _, path in caught.value.missing)
+    assert "runtime extras" not in error.message
+    assert "Use existing model folder" in error.message
+
+
+def test_missing_models_respects_disabled_features(config: AppConfig) -> None:
+    from jake.application.settings import MissingModelsError
+
+    with pytest.raises(MissingModelsError) as caught:
+        validate_models(config)
+    assert caught.value.missing == (("YOLO", config.detector.model),)
+    with pytest.raises(MissingModelsError) as caught:
+        validate_models(config, enrollment=True)
+    assert [name for name, _ in caught.value.missing] == ["YuNet", "SFace"]
+
+
+def test_existing_model_folder_updates_paths_only(window: MainWindow, tmp_path: Path) -> None:
+    folder = tmp_path / "existing-models"
+    folder.mkdir()
+    panel = window.settings
+    panel.appearance.setChecked(True)
+    panel.identity.setChecked(True)
+    for item in (panel.yolo, panel.body, panel.yunet, panel.sface):
+        (folder / Path(item.edit.text()).name).write_bytes(b"local mock model")
+    (folder / Path(panel.body.edit.text()).with_suffix(".bin").name).write_bytes(b"mock bin")
+    store_path = panel.store.edit.text()
+    before = {p.name: p.read_bytes() for p in folder.iterdir()}
+    panel.use_model_folder(folder)
+    selected = panel.value()
+    validate_models(selected)
+    assert Path(selected.detector.model).parent == folder
+    assert panel.store.edit.text() == store_path
+    assert {p.name: p.read_bytes() for p in folder.iterdir()} == before
+    assert not window.path.exists()
+
+
+def test_invalid_model_folder_restores_every_input(window: MainWindow, tmp_path: Path) -> None:
+    from jake.application.settings import MissingModelsError
+
+    panel = window.settings
+    inputs = (panel.yolo, panel.body, panel.yunet, panel.sface)
+    original = tuple(item.edit.text() for item in inputs)
+    with pytest.raises(MissingModelsError):
+        panel.use_model_folder(tmp_path / "missing")
+    assert tuple(item.edit.text() for item in inputs) == original
+
+
+def test_cancel_model_folder_does_nothing(
+    window: MainWindow, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from PySide6.QtWidgets import QFileDialog
+
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", Mock(return_value=""))
+    before = window.settings.yolo.edit.text()
+    window.settings.choose_model_folder()
+    assert window.settings.yolo.edit.text() == before

@@ -2,6 +2,8 @@
 
 from dataclasses import dataclass
 
+from jake.application.settings import MissingModelsError
+
 
 @dataclass(frozen=True)
 class UIError:
@@ -12,6 +14,17 @@ class UIError:
 
 
 def ui_error(error: Exception) -> UIError:
+    if isinstance(error, MissingModelsError):
+        files = "\n".join(f"{name}: {path}" for name, path in error.missing)
+        return UIError(
+            "Required model files not found",
+            "These configured files do not exist:\n\n"
+            + files
+            + "\n\nChoose 'Use existing model folder…' in this form, or Browse for each file. "
+            "The AppData models folder starts empty. Existing repository models can be used "
+            "in place; nothing needs to be copied or downloaded.",
+            "Model preflight missing files:\n" + files,
+        )
     text = str(error).lower()  # Match known categories only; never display raw third-party text.
     diagnostic = type(error).__name__
     if "migrat" in text or "plaintext" in text:

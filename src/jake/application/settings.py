@@ -51,20 +51,30 @@ class AppPaths:
         )
 
 
+class MissingModelsError(FileNotFoundError):
+    """Typed preflight failure containing only configured model names and paths."""
+
+    def __init__(self, missing: tuple[tuple[str, str], ...]) -> None:
+        self.missing = missing
+        super().__init__("Required local model files are missing")
+
+
 def validate_models(config: AppConfig, *, enrollment: bool = False) -> None:
-    paths = [] if enrollment else [config.detector.model]
+    paths = [] if enrollment else [("YOLO", config.detector.model)]
     if not enrollment and config.tracking.appearance.enabled:
         paths.extend(
             [
-                config.tracking.appearance.model,
-                str(Path(config.tracking.appearance.model).with_suffix(".bin")),
+                ("Appearance XML", config.tracking.appearance.model),
+                ("Appearance BIN", str(Path(config.tracking.appearance.model).with_suffix(".bin"))),
             ]
         )
     if enrollment or config.identity.enabled or config.visitors.enabled:
-        paths.extend([config.identity.detector_model, config.identity.encoder_model])
-    for value in paths:
-        if not Path(value).is_file():
-            raise FileNotFoundError(f"Local model missing: {value}")
+        paths.extend(
+            [("YuNet", config.identity.detector_model), ("SFace", config.identity.encoder_model)]
+        )
+    missing = tuple((name, value) for name, value in paths if not Path(value).is_file())
+    if missing:
+        raise MissingModelsError(missing)
 
 
 def save_config(path: Path, config: AppConfig) -> None:

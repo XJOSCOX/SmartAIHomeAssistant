@@ -16,13 +16,16 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
+from jake.application.errors import ui_error
 from jake.application.sessions import Update
+from jake.application.settings import validate_models
 from jake.config import AppConfig
 from jake.home_config import HomeConfig
 
@@ -176,6 +179,16 @@ class SettingsPanel(QWidget):
         form.addRow("Recurring · distinct local days", self.recurring)
         form.addRow("Frequent · distinct local days", self.frequent)
         form.addRow("Visitor retention · days", self.retention)
+        model_folder = QPushButton("Use existing model folder…")
+        model_folder.clicked.connect(self.choose_model_folder)
+        form.addRow("Already have Jake models?", model_folder)
+        form.addRow(
+            label(
+                "Select your existing repository models folder to update all four "
+                "model paths. Files and biometric stores stay where they are.",
+                "muted",
+            )
+        )
         self.yolo = PathInput(config.detector.model)
         self.body = PathInput(config.tracking.appearance.model)
         self.yunet = PathInput(config.identity.detector_model)
@@ -199,6 +212,29 @@ class SettingsPanel(QWidget):
                 "muted",
             )
         )
+
+    def choose_model_folder(self) -> None:
+        directory = QFileDialog.getExistingDirectory(self, "Choose existing Jake models folder")
+        if not directory:
+            return
+        try:
+            self.use_model_folder(Path(directory))
+        except Exception as exc:
+            error = ui_error(exc)
+            QMessageBox.warning(self, error.title, error.message)
+
+    def use_model_folder(self, directory: Path) -> None:
+        """Explicit selection only; validate required files before changing any fields."""
+        inputs = (self.yolo, self.body, self.yunet, self.sface)
+        previous = tuple(item.edit.text() for item in inputs)
+        try:
+            for item in inputs:
+                item.edit.setText(str(directory.absolute() / Path(item.edit.text()).name))
+            validate_models(self.value())
+        except Exception:
+            for item, value in zip(inputs, previous, strict=True):
+                item.edit.setText(value)
+            raise
 
     def select_camera(self, index: int) -> None:
         value = self.cameras.itemData(index)
