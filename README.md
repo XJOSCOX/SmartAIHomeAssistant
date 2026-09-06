@@ -6,6 +6,23 @@ support natural conversation. **Phase 2D adds opt-in anonymous recurring visitor
 separate from enrolled residents, with encrypted templates and retention controls.
 All tracker modes remain available; track IDs are session-local, not resident identities.**
 
+## Phase 2F Desktop Control Center
+
+Jake now provides a native Windows PySide6 dashboard, embedded camera, consent-based
+resident enrollment, encrypted visitor management, session events, settings and diagnostics.
+The GUI and CLIs share application services; perception algorithms remain intact.
+Camera/model work stays off the UI thread. No camera or biometric store opens at launch.
+
+After repository review:
+
+```powershell
+uv run --extra desktop --extra detection --extra appearance --extra identity jake-desktop --config config/local.toml
+```
+
+Without `--config`, first-run setup uses `%LOCALAPPDATA%/Jake/`. Existing configs/stores
+are never silently moved or migrated. See the [Desktop Control Center guide](docs/desktop-control-center.md)
+for architecture, data handling, threading limits, EXE and Inno Setup build instructions.
+
 ## Phase 1 scope
 
 The initial boundary is:

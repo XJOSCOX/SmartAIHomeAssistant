@@ -7,6 +7,7 @@ from pathlib import Path
 
 @dataclass(frozen=True, slots=True)
 class IdentityConfig:
+    enabled: bool = False
     detector_model: str = "models/face_detection_yunet_2023mar.onnx"
     encoder_model: str = "models/face_recognition_sface_2021dec.onnx"
     store_path: str = ".jake-identities"
@@ -24,6 +25,8 @@ class IdentityConfig:
     duplicate_similarity: float = 0.995
 
     def __post_init__(self) -> None:
+        if type(self.enabled) is not bool:
+            raise ValueError("identity.enabled must be boolean")
         for name in ("detector_model", "encoder_model"):
             path = getattr(self, name)
             if not isinstance(path, str) or "://" in path or Path(path).suffix != ".onnx":

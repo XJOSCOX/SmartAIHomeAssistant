@@ -11,7 +11,6 @@ from jake.appearance import AppearanceError
 from jake.config import load_app_config
 from jake.event_console import log_event
 from jake.identity import IdentityError
-from jake.ports import PersonTracker
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -68,6 +67,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--debug-tracks requires --track --tracker kalman")
     try:
         config = load_app_config(args.config)
+        args.identity = args.identity or config.identity.enabled
+        if args.identity and not args.track:
+            raise ValueError("identity requires --track")
         if args.visitors is not None:
             config = replace(config, visitors=replace(config.visitors, enabled=args.visitors))
         if config.visitors.enabled:
@@ -105,72 +107,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         import cv2
 
-        from jake.adapters.iou_tracker import IoUPersonTracker, TrackerError
-        from jake.adapters.kalman_tracker import KalmanPersonTracker, StabilizedKalmanPersonTracker
+        from jake.adapters.iou_tracker import TrackerError
         from jake.adapters.opencv_camera import CameraError
-        from jake.adapters.yolo_detector import DetectorError, YoloPersonDetector
+        from jake.adapters.yolo_detector import DetectorError
         from jake.preview import preview
     except ImportError:
         print("Vision dependencies unavailable. Run: uv sync --extra vision", file=sys.stderr)
         return 2
     try:
-        detector = (
-            YoloPersonDetector(config.detector, config.pipeline.min_person_confidence)
-            if args.detect or args.track
-            else None
+        from jake.application.composition import compose
+
+        components = compose(
+            config,
+            detect=args.detect,
+            track=args.track,
+            tracker_mode=args.tracker,
+            identify=args.identity,
+            debug_tracks=args.debug_tracks,
         )
-        encoder = None
-        tracker: PersonTracker | None = None
-        diagnostics = None
-        if args.track:
-            if args.tracker in {"kalman", "kalman-baseline"}:
-                motion_tracker = (
-                    StabilizedKalmanPersonTracker(config.tracking)
-                    if args.tracker == "kalman"
-                    else KalmanPersonTracker(config.tracking)
-                )
-                if args.tracker == "kalman" and config.tracking.appearance.enabled:
-                    from jake.adapters.kalman_tracker import AppearanceKalmanPersonTracker
-                    from jake.adapters.openvino_appearance import OpenVINOAppearanceEncoder
-
-                    encoder = OpenVINOAppearanceEncoder(config.tracking.appearance)
-                    motion_tracker = AppearanceKalmanPersonTracker(config.tracking)
-                    if config.tracking.reid.enabled:
-                        from jake.adapters.kalman_tracker import RecentlyLostPersonTracker
-
-                        motion_tracker = RecentlyLostPersonTracker(config.tracking)
-                tracker = motion_tracker
-                if args.debug_tracks:
-                    diagnostics = motion_tracker.diagnostics
-            else:
-                tracker = IoUPersonTracker(config.tracking)
-        identity = None
-        visitors = None
-        if args.identity:
-            from jake.adapters.local_identity_store import LocalIdentityStore
-            from jake.adapters.opencv_faces import SFaceEncoder, YuNetFaceDetector, face_quality
-            from jake.face_identity import FaceIdentityService
-
-            identity = FaceIdentityService(
-                config.identity,
-                YuNetFaceDetector(config.identity),
-                SFaceEncoder(config.identity),
-                LocalIdentityStore(Path(config.identity.store_path)),
-                face_quality,
-                collect_visitors=config.visitors.enabled,
-            )
-            if config.visitors.enabled:
-                from jake.adapters.visitor_store import EncryptedVisitorStore
-                from jake.visitors import VisitorMemory
-
-                visitors = VisitorMemory(
-                    config.visitors,
-                    EncryptedVisitorStore(
-                        Path(config.identity.store_path), timezone=config.home.timezone
-                    ),
-                    timezone=config.home.timezone,
-                    is_nonresident=identity.confidently_nonresident,
-                )
+        detector, tracker = components.detector, components.tracker
+        encoder, identity, visitors = components.encoder, components.identity, components.visitors
+        diagnostics = components.diagnostics
         preview(
             config,
             detector,

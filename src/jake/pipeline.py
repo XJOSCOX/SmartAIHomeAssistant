@@ -4,7 +4,8 @@ from collections.abc import Iterator
 
 from jake.appearance import encode_detections
 from jake.config import PipelineConfig
-from jake.domain import Frame, FrameContext, PersonEvent
+from jake.diagnostics import measure_detection
+from jake.domain import Frame, FrameContext, PersonEvent, PersonTrack
 from jake.face_identity import FaceIdentityService
 from jake.identity_domain import IdentityEvent, IdentityMatch
 from jake.ports import AppearanceEncoder, EventGenerator, FrameSource, PersonDetector, PersonTracker
@@ -44,6 +45,9 @@ class PerceptionPipeline:
         self.visitor_events: tuple[VisitorEvent, ...] = ()
         self.identity_matches: dict[str, IdentityMatch] = {}
         self.identity_events: tuple[IdentityEvent, ...] = ()
+        self.tracks: tuple[PersonTrack, ...] = ()
+        self.inference_ms = 0.0
+        self.people_detected = 0
         self._last_sequence: int | None = None
 
     def process(self, frame: Frame) -> tuple[PersonEvent, ...]:
@@ -54,14 +58,18 @@ class PerceptionPipeline:
             raise ValueError("frame sequences must be strictly increasing within a session")
         self._last_sequence = frame.sequence
         context = FrameContext(frame.camera_id, frame.sequence, frame.captured_at)
+        measured = measure_detection(self._detector, frame)
+        self.inference_ms = measured.inference_ms
         detections = tuple(
             detection
-            for detection in self._detector.detect(frame)
+            for detection in measured.detections
             if detection.confidence >= self._config.min_person_confidence
         )
         if self._encoder is not None:
             detections = encode_detections(frame, detections, self._encoder)
+        self.people_detected = len(detections)
         tracks = self._tracker.update(context, detections)
+        self.tracks = tracks
         events = self._events.generate(context, tracks)
         if self._identity is not None:
             self.identity_matches, self.identity_events = self._identity.process(frame, tracks)

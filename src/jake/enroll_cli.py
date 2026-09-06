@@ -8,7 +8,7 @@ from pathlib import Path
 
 from jake.config import load_app_config
 from jake.domain import BoundingBox
-from jake.identity import Enrollment, IdentityError
+from jake.identity import IdentityError
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -57,26 +57,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         import cv2
 
         from jake.adapters.opencv_camera import OpenCVCamera
-        from jake.adapters.opencv_faces import SFaceEncoder, YuNetFaceDetector, crop, face_quality
+        from jake.adapters.opencv_faces import crop
+        from jake.application.sessions import EnrollmentSession
 
-        detector, encoder = YuNetFaceDetector(config.identity), SFaceEncoder(config.identity)
-        enrollment = Enrollment(config.identity)
+        session = EnrollmentSession(config, name, args.consent)
+        enrollment = session.enrollment
         window = "Jake enrollment - one consenting resident only - q/Q cancels"
         try:
             with OpenCVCamera(config.pipeline.camera_id, config.camera) as camera:
                 cv2.namedWindow(window, cv2.WINDOW_NORMAL)
                 for frame in camera:
-                    faces = detector.detect(frame, BoundingBox(0, 0, 1, 1))
-                    reason = "Exactly one face required; look forward then turn slightly"
-                    if len(faces) == 1:
-                        quality = face_quality(frame, faces[0], config.identity)
-                        embedding = encoder.encode(frame, faces[0]) if quality.accepted else None
-                        reason = enrollment.accept(quality, embedding, frame.captured_at)
+                    update = session.process(frame)
                     display, _, _ = crop(frame, BoundingBox(0, 0, 1, 1))
-                    text = (
-                        f"{len(enrollment.samples)}/{config.identity.enrollment_samples} accepted "
-                        f"| {reason}"
-                    )
+                    text = update.progress
                     cv2.putText(
                         display, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1
                     )
@@ -86,7 +79,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         print("Enrollment cancelled; no profile saved.")
                         return 0
                     if enrollment.ready:
-                        store.add(enrollment.profile(name))
+                        session.commit()
                         print(
                             f"Enrolled {name} from {len(enrollment.samples)} quality observations."
                         )

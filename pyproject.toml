@@ -11,6 +11,8 @@ requires-python = ">=3.11"
 dependencies = ["tzdata>=2025.2"]
 
 [project.optional-dependencies]
+desktop = ["PySide6>=6.8,<7", "tomli-w>=1.2,<2"]
+packaging = ["pyinstaller>=6.16,<7"]
 tracking = ["numpy>=2,<3"]
 vision = ["opencv-python>=4.13,<5", "numpy>=2,<3"]
 detection = ["opencv-python>=4.13,<5", "numpy>=2,<3", "ultralytics==8.4.141"]
@@ -22,6 +24,9 @@ identity = ["cryptography==50.0.1", "keyring==25.7.0"]
 jake-camera = "jake.cli:main"
 jake-enroll-resident = "jake.enroll_cli:main"
 jake-visitors = "jake.visitor_cli:main"
+
+[project.gui-scripts]
+jake-desktop = "jake.desktop.main:main"
 
 [dependency-groups]
 dev = ["pytest>=8.3,<10", "pytest-cov>=6,<8", "mypy>=1.15,<2", "ruff>=0.11,<1", "cryptography==50.0.1", "keyring==25.7.0"]

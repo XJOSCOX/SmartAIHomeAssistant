@@ -55,6 +55,8 @@ appearance_weight = 0.7
 motion_weight = 0.3
 
 [identity]
+# Config opt-in shared by desktop and CLI; --identity still works.
+enabled = false
 # Opt in with --identity; enrollment is a separate deliberate CLI action.
 # These local files must be installed explicitly; Jake never downloads them.
 detector_model = "models/face_detection_yunet_2023mar.onnx"

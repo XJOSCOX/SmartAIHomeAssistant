@@ -20,7 +20,11 @@ from jake.identity_ports import KeyProvider
 def private_permissions(path: Path, directory: bool = False) -> None:
     if os.name == "nt":
         result = subprocess.run(
-            ["whoami", "/user", "/fo", "csv", "/nh"], check=True, capture_output=True, text=True
+            ["whoami", "/user", "/fo", "csv", "/nh"],
+            check=True,
+            capture_output=True,
+            text=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         sid = next(csv.reader(result.stdout.splitlines()))[1]
         if not sid.startswith("S-1-") or any(c not in "S0123456789-" for c in sid):
@@ -30,6 +34,7 @@ def private_permissions(path: Path, directory: bool = False) -> None:
             ["icacls", str(path), "/inheritance:r", "/grant:r", f"*{sid}:{rights}"],
             check=True,
             capture_output=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     else:
         path.chmod(0o700 if directory else 0o600)
