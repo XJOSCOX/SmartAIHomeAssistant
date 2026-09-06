@@ -151,12 +151,86 @@ def test_explicit_migration_preserves_every_field(store: LocalIdentityStore) -> 
     assert store.profiles() == expected
     assert json.loads(store.path.read_bytes())["version"] == 2
     assert sorted(p.name for p in store.root.iterdir()) == ["residents.json"]
-    with pytest.raises(IdentityError):
+    with pytest.raises(IdentityError, match="already encrypted; migration is not required"):
         store.migrate()
     assert store.profiles() == expected
     store.delete(PROFILE.resident_id)
     store.add(PROFILE)
     assert set(store.profiles()) == set(expected)
+
+
+def test_second_migration_does_not_create_key_or_rewrite(
+    store: LocalIdentityStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    legacy(store)
+    store.migrate()
+    original = store.path.read_bytes()
+    profiles = store.profiles()
+    create = Mock(side_effect=AssertionError("must not create another key"))
+    write = Mock(side_effect=AssertionError("must not rewrite encrypted store"))
+    monkeypatch.setattr(store.provider, "create", create)
+    monkeypatch.setattr(store, "_write", write)
+    with pytest.raises(IdentityError, match="already encrypted; migration is not required"):
+        store.migrate()
+    create.assert_not_called()
+    write.assert_not_called()
+    assert store.path.read_bytes() == original
+    assert store.profiles() == profiles
+
+
+@pytest.mark.parametrize("corruption", ["ciphertext", "envelope", "payload", "missing_key"])
+def test_migration_does_not_mislabel_corrupt_v2_as_already_encrypted(
+    corruption: str,
+    store: LocalIdentityStore,
+    memory_keys: MemoryKeys,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store.add(PROFILE)
+    document = json.loads(store.path.read_bytes())
+    if corruption == "ciphertext":
+        raw = bytearray(base64.b64decode(document["ciphertext"]))
+        raw[0] ^= 1
+        document["ciphertext"] = base64.b64encode(raw).decode()
+    elif corruption == "envelope":
+        del document["nonce"]
+    elif corruption == "payload":
+        document = json.loads(
+            encrypt({"version": 1, "residents": [{}]}, document["key_id"], store.provider)
+        )
+    else:
+        del memory_keys.keys[document["key_id"]]
+    store.path.write_bytes(serialize(document))
+    original = store.path.read_bytes()
+    create = Mock(side_effect=AssertionError("must not create key"))
+    monkeypatch.setattr(store.provider, "create", create)
+    with pytest.raises(IdentityError, match="corrupt|authentication|key unavailable") as error:
+        store.migrate()
+    assert "already encrypted" not in str(error.value)
+    assert store.path.read_bytes() == original
+    create.assert_not_called()
+
+
+def test_migration_cli_reports_already_encrypted(
+    store: LocalIdentityStore,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from jake.enroll_cli import main
+
+    store.add(PROFILE)
+    original = store.path.read_bytes()
+    config = tmp_path / "config.toml"
+    config.write_text('[pipeline]\ncamera_id="test"', encoding="utf-8")
+    monkeypatch.setattr(
+        "jake.adapters.local_identity_store.LocalIdentityStore", Mock(return_value=store)
+    )
+    assert main(["--config", str(config), "--migrate-store"]) == 1
+    output = capsys.readouterr()
+    assert "Identity store is already encrypted; migration is not required." in output.err
+    assert "corrupt" not in output.err
+    assert store.path.read_bytes() == original
 
 
 @pytest.mark.parametrize("failure", ["key", "verify", "replace", "permission", "fsync"])

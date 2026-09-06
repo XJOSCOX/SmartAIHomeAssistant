@@ -186,7 +186,15 @@ class LocalIdentityStore:
     def migrate(self) -> None:
         """Explicit v1 conversion only; original survives any failure before replacement."""
         with self._locked():
-            profiles = self._parse(self._document())
+            document = self._document()
+            if isinstance(document, dict) and document.get("version") == 2:
+                # Authenticate and validate before describing the store as encrypted.
+                payload, _ = decrypt(document, self.provider)
+                self._parse(payload)
+                raise IdentityError(
+                    "Identity store is already encrypted; migration is not required."
+                )
+            profiles = self._parse(document)
             key_id, _ = self.provider.create()
             self._write(profiles, key_id)
 
