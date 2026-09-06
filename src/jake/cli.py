@@ -151,6 +151,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("\nCamera preview stopped.")
         return 0
+    except ImportError:
+        print(
+            "Optional dependency unavailable; install the requested extras (including identity).",
+            file=sys.stderr,
+        )
+        return 1
     except (
         CameraError,
         DetectorError,

@@ -59,7 +59,7 @@ motion_weight = 0.3
 # These local files must be installed explicitly; Jake never downloads them.
 detector_model = "models/face_detection_yunet_2023mar.onnx"
 encoder_model = "models/face_recognition_sface_2021dec.onnx"
-# Dedicated private directory; plaintext biometric templates, not encrypted yet.
+# Dedicated private directory; encrypted payload, key held separately in OS credential store.
 store_path = ".jake-identities"
 candidate_similarity = 0.45
 resident_similarity = 0.60

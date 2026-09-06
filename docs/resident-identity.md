@@ -59,7 +59,7 @@ alignment and SFace run only for a quality-approved face. Recognition attempts a
 limited to about 3.3 per second per visible track by default. Cost grows with people,
 crop resolution, and CPU speed, and adds to person detection/appearance cost. No GPU
 is required or selected by these adapters. No real-model latency or recognition
-accuracy is claimed from mock tests; physical Phase 2B validation remains outstanding.
+accuracy is claimed from mock tests; mock tests alone do not establish biometric accuracy.
 
 ## Quality and enrollment
 
@@ -76,7 +76,7 @@ Quality is checked before encoding. Rejections have explicit reasons:
 Enrollment requires resident consent and a separate explicit command:
 
 ```sh
-uv run --extra vision jake-enroll-resident --config config/local.toml --name "Joseph" --consent
+uv run --extra identity --extra vision jake-enroll-resident --config config/local.toml --name "Joseph" --consent
 ```
 
 Explain to each participating resident that Jake will save a face template locally,
@@ -143,7 +143,7 @@ still disclose presence; terminal capture is controlled by the operator.
 The full live command, after review and model/enrollment setup, is:
 
 ```sh
-uv run --extra detection --extra appearance jake-camera --config config/local.toml --track --tracker kalman --assignment hungarian --appearance --reid --events --identity
+uv run --extra identity --extra detection --extra appearance jake-camera --config config/local.toml --track --tracker kalman --assignment hungarian --appearance --reid --events --identity
 ```
 
 This uses the existing explicitly installed YOLO and OpenVINO appearance models too;
@@ -153,35 +153,29 @@ without it no face model is loaded or identity store read.
 
 ## Storage, deletion, and limitations
 
-**The version-1 store is plaintext, not encrypted.** A dedicated `.jake-identities/`
-directory is ignored by Git. Custom paths must also be excluded or located outside
-the repository. Use a newly created dedicated local directory, not a shared folder.
-Only UUID, display name, enrollment timestamp/sample count, model fingerprint, and
-normalized templates are saved. No image, audio, observation history, or raw crop is
-written. Vectors are omitted from domain repr and events.
+Phase 2C encrypts the entire resident payload using AES-256-GCM. Keys live separately
+in Windows Credential Manager or Linux Secret Service; the `identity` extra supplies
+pinned cryptography/keyring dependencies. See [encrypted storage](encrypted-identity-storage.md)
+for the envelope, explicit v1 migration, platform setup, backups, and threat model.
+Phase 2B enrollment and recognition have been physically validated with multiple residents;
+Phase 2C Windows key storage was validated separately with disposable synthetic data.
 
-Writes use an exclusive local writer lock, a same-directory temporary file with
-restricted permissions, flush/fsync, and atomic replacement. Readers see a complete
-old or new document. Invalid versions, corrupt/non-normalized vectors, duplicate
-records, and oversized stores are rejected without replacing records. The store
-limits profiles to 100 and reads to 2 MB. A crash may leave a lock or a private
-temporary template file; inspect only after all writers stop, then remove stale files.
-The store is for one local filesystem, not network storage or distributed writers.
+A dedicated `.jake-identities/` directory remains ignored by Git. Custom paths must
+also be excluded or located outside the repository. No image, audio, observation
+history, or raw crop is written. Vectors are omitted from domain repr and events.
 
-POSIX permissions are 0700/0600; Windows removes inherited ACL grants and grants the
-current SID full control before writing templates. Preexisting explicit ACL grants
-are not sanitized, another reason to use a fresh dedicated directory. Permission
-setup failure aborts saving. Local administrators, same-account processes, backups,
-and compromised hosts remain outside this protection. Python offers no secure memory
-erasure guarantee. Robust encryption with OS-keychain-managed keys, key rotation, and
-recovery is the immediate follow-up; no homemade encryption or committed key is used.
+Writes retain locking, restrictive permissions, fsync, and atomic replacement.
+Only encrypted bytes are written to temporary files. Existing plaintext v1 stores
+are rejected until explicitly migrated, never silently overwritten on read.
+Python cannot guarantee secure memory erasure of plaintext or keys. Encryption does
+not protect against same-account malware or an already compromised host.
 
 Deletion/re-enrollment procedure: stop running identity sessions first (they cache
 profiles for their session), list local UUIDs, then explicitly delete the chosen UUID:
 
 ```sh
-uv run --extra vision jake-enroll-resident --config config/local.toml --list
-uv run --extra vision jake-enroll-resident --config config/local.toml --delete <resident-uuid>
+uv run --extra identity --extra vision jake-enroll-resident --config config/local.toml --list
+uv run --extra identity --extra vision jake-enroll-resident --config config/local.toml --delete <resident-uuid>
 ```
 
 Restarting creates a session without that profile. Re-enrollment uses the deliberate

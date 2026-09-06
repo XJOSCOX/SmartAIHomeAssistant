@@ -20,6 +20,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     group.add_argument("--name")
     group.add_argument("--delete", metavar="RESIDENT_UUID")
     group.add_argument("--list", action="store_true")
+    group.add_argument("--migrate-store", action="store_true", help="Explicitly encrypt a v1 store")
     parser.add_argument(
         "--consent",
         action="store_true",
@@ -33,6 +34,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         config = load_app_config(args.config)
         store = LocalIdentityStore(Path(config.identity.store_path))
+        if args.migrate_store:
+            store.migrate()
+            print("Identity store migrated to encrypted v2. Restart identity sessions.")
+            return 0
         profiles = store.profiles()
         if args.list:
             for profile in profiles:

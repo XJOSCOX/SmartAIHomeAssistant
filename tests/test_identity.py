@@ -29,6 +29,7 @@ from jake.identity_domain import (
     IdentityState,
     ResidentProfile,
 )
+from jake.identity_encryption import decrypt, encrypt
 
 START = datetime(2026, 1, 1, tzinfo=UTC)
 BOX = BoundingBox(0.1, 0.1, 0.9, 0.9)
@@ -167,7 +168,8 @@ def test_store_atomic_validation_delete_and_no_images(
     assert store.profiles() == ()
     store.add(PROFILE)
     assert store.profiles() == (PROFILE,)
-    document = json.loads(store.path.read_text(encoding="utf-8"))
+    document, _ = decrypt(json.loads(store.path.read_bytes()), store.provider)
+    assert isinstance(document, dict)
     assert set(document) == {"version", "residents"}
     assert set(document["residents"][0]) == {
         "resident_id",
@@ -380,9 +382,10 @@ def test_store_lock_and_invalid_templates(tmp_path: Path, monkeypatch: pytest.Mo
         store.add(PROFILE)
     (tmp_path / ".writer.lock").unlink()
     store.add(PROFILE)
-    data = json.loads(store.path.read_text(encoding="utf-8"))
+    data, key_id = decrypt(json.loads(store.path.read_bytes()), store.provider)
+    assert isinstance(data, dict)
     data["residents"][0]["templates"][0]["values"] = [2.0, 0.0]
-    store.path.write_text(json.dumps(data), encoding="utf-8")
+    store.path.write_bytes(encrypt(data, key_id, store.provider))
     with pytest.raises(IdentityError, match="corrupt"):
         store.profiles()
 

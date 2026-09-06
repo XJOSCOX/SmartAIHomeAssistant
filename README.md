@@ -2,8 +2,8 @@
 
 Jake is the foundation for a privacy-first, local-first smart home AI system.
 The intended system will understand household events locally and eventually
-support natural conversation. **Phase 2B adds opt-in local resident enrollment and
-temporally confirmed face identity, separate from body tracking and ReID.
+support natural conversation. **Phase 2C encrypts enrolled resident payloads using
+AES-256-GCM and OS-protected keys, preserving Phase 2B face identity and body ReID.
 All tracker modes remain available; track IDs are session-local, not resident identities.**
 
 ## Phase 1 scope
@@ -31,16 +31,25 @@ YuNet detects faces inside person regions; SFace produces normalized 128-dimensi
 embeddings. Both run locally on CPU behind replaceable interfaces. A resident match
 requires multiple high-quality observations. Clothing similarity cannot grant identity.
 
-**Biometric storage is permission-restricted but not encrypted yet.** OS-keychain-backed
-encryption is an immediate follow-up. Enrollment is never automatic. The commands
+**Biometric storage is encrypted and permission-restricted.** Windows Credential Manager
+or Linux Secret Service holds the key, separately from the store. Existing plaintext
+stores require explicit migration; reads never migrate or fall back to plaintext.
+See [encryption, migration, and recovery](docs/encrypted-identity-storage.md).
+Enrollment is never automatic. The commands
 below are documented for review and subsequent live validation; automated tests use
 fake models and cameras, and do not establish real-world recognition accuracy.
 
 After the explicit local model setup in the design guide:
 
 ```sh
-uv run --extra vision jake-enroll-resident --config config/local.toml --name "Joseph" --consent
-uv run --extra detection --extra appearance jake-camera --config config/local.toml --track --tracker kalman --assignment hungarian --appearance --reid --events --identity
+uv run --extra identity --extra vision jake-enroll-resident --config config/local.toml --name "Joseph" --consent
+uv run --extra identity --extra detection --extra appearance jake-camera --config config/local.toml --track --tracker kalman --assignment hungarian --appearance --reid --events --identity
+```
+
+Migration command for after repository review (no camera required):
+
+```sh
+uv run --extra identity jake-enroll-resident --config config/local.toml --migrate-store
 ```
 
 ## Development
@@ -726,7 +735,7 @@ awaits physical validation. The sequence below is a planning outline.
 | Phase | Planned capabilities |
 | --- | --- |
 | 1 — perception | Foundation through 1G track stabilization implemented |
-| 2 — recognition | 2A/2A.1 body continuity and 2B local resident enrollment/face identity implemented; next: encrypted template storage, then separately scoped visitor capabilities |
+| 2 — recognition | 2A/2A.1 body continuity, 2B resident face identity, and 2C encrypted template storage implemented; visitor capabilities remain separately scoped |
 | 3 — understanding and memory | Activity recognition, event memory, household behavioral learning, anomaly detection, and governed continual learning |
 | 4 — voice and interaction | Speech recognition, text-to-speech, basic conversational AI, context-aware resident greetings, and daily/event summaries |
 | 5 — multiple hubs | Privacy-preserving context coordination and conversational handoff between household hubs |

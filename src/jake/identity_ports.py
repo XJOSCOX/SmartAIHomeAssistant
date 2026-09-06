@@ -20,6 +20,13 @@ class IdentityStore(Protocol):
     def delete(self, resident_id: str) -> None: ...
 
 
+class KeyProvider(Protocol):
+    """Create a new OS-protected key or retrieve an existing key without replacement."""
+
+    def create(self) -> tuple[str, bytes]: ...
+    def get(self, key_id: str) -> bytes: ...
+
+
 class IdentityMatcher(Protocol):
     def match(
         self, embedding: FaceEmbedding, profiles: tuple[ResidentProfile, ...]

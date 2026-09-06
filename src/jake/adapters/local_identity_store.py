@@ -1,15 +1,20 @@
-"""Versioned plaintext biometric templates in a private, dedicated local directory."""
+"""Versioned encrypted biometric templates in a private, dedicated local directory."""
 
 import csv
 import json
 import os
 import subprocess
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
+from jake.adapters.identity_keys import default_key_provider
 from jake.identity import IdentityError
 from jake.identity_domain import FaceEmbedding, ResidentProfile
+from jake.identity_encryption import decrypt, encrypt
+from jake.identity_ports import KeyProvider
 
 
 def private_permissions(path: Path, directory: bool = False) -> None:
@@ -33,19 +38,48 @@ def private_permissions(path: Path, directory: bool = False) -> None:
 class LocalIdentityStore:
     """Single-writer lock + atomic replacement. No images, histories, or credentials."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, key_provider: KeyProvider | None = None) -> None:
         self.root = root.absolute()
         self.path = self.root / "residents.json"
+        self._provider = key_provider
+
+    @property
+    def provider(self) -> KeyProvider:
+        if self._provider is None:
+            self._provider = default_key_provider()
+        return self._provider
+
+    def _check_paths(self) -> None:
+        if any(p.is_symlink() for p in (self.path, self.root, *self.root.parents)):
+            raise IdentityError("identity storage cannot use symlinks")
+
+    def _document(self) -> object:
+        self._check_paths()
+        try:
+            if self.path.stat().st_size > 3_000_000:
+                raise ValueError("store too large")
+            return json.loads(self.path.read_bytes())
+        except (OSError, ValueError):
+            raise IdentityError("identity store unreadable or corrupt") from None
+
+    def _load(self) -> tuple[tuple[ResidentProfile, ...], str | None]:
+        self._check_paths()
+        if not self.path.exists():
+            return (), None
+        data = self._document()
+        if isinstance(data, dict) and type(data.get("version")) is int and data["version"] == 1:
+            raise IdentityError(
+                "legacy plaintext v1 identity store; explicit --migrate-store required"
+            )
+        payload, key_id = decrypt(data, self.provider)
+        return self._parse(payload), key_id
 
     def profiles(self) -> tuple[ResidentProfile, ...]:
-        if self.root.is_symlink() or self.path.is_symlink():
-            raise IdentityError("identity storage cannot use symlinks")
-        if not self.path.exists():
-            return ()
+        return self._load()[0]
+
+    @staticmethod
+    def _parse(data: object) -> tuple[ResidentProfile, ...]:
         try:
-            if self.path.stat().st_size > 2_000_000:
-                raise ValueError("store too large")
-            data = json.loads(self.path.read_text(encoding="utf-8"))
             if (
                 not isinstance(data, dict)
                 or set(data) != {"version", "residents"}
@@ -91,7 +125,8 @@ class LocalIdentityStore:
                 "identity store is unreadable or corrupt; no records replaced"
             ) from exc
 
-    def _write(self, profiles: tuple[ResidentProfile, ...]) -> None:
+    @staticmethod
+    def _payload(profiles: tuple[ResidentProfile, ...]) -> dict[str, object]:
         data = {
             "version": 1,
             "residents": [
@@ -107,21 +142,32 @@ class LocalIdentityStore:
                 for p in profiles
             ],
         }
+        return data
+
+    def _write(self, profiles: tuple[ResidentProfile, ...], key_id: str) -> None:
+        encrypted = encrypt(self._payload(profiles), key_id, self.provider)
+        if len(encrypted) > 3_000_000:
+            raise IdentityError("encrypted identity store too large")
         descriptor, name = tempfile.mkstemp(prefix=".residents-", dir=self.root)
         temporary = Path(name)
         try:
-            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            with os.fdopen(descriptor, "wb") as stream:
                 private_permissions(temporary)
-                json.dump(data, stream, allow_nan=False, separators=(",", ":"))
+                stream.write(encrypted)
                 stream.flush()
                 os.fsync(stream.fileno())
+            # Verify the actual encrypted temporary file before replacing any original.
+            payload, verified_id = decrypt(json.loads(temporary.read_bytes()), self.provider)
+            if verified_id != key_id or self._parse(payload) != profiles:
+                raise IdentityError("encrypted identity verification failed")
+            self._check_paths()
             os.replace(temporary, self.path)
         finally:
             temporary.unlink(missing_ok=True)
 
-    def _change(self, profile: ResidentProfile | None, resident_id: str | None = None) -> None:
-        if self.root.is_symlink():
-            raise IdentityError("identity directory cannot be a symlink")
+    @contextmanager
+    def _locked(self) -> Iterator[None]:
+        self._check_paths()
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
         private_permissions(self.root, True)
         lock = self.root / ".writer.lock"
@@ -129,11 +175,24 @@ class LocalIdentityStore:
             descriptor = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except FileExistsError as exc:
             raise IdentityError(
-                "identity store is locked by another writer; inspect stale lock after a crash"
+                "identity store is locked; inspect stale lock after a crash"
             ) from exc
         try:
             os.close(descriptor)
-            profiles = self.profiles()
+            yield
+        finally:
+            lock.unlink(missing_ok=True)
+
+    def migrate(self) -> None:
+        """Explicit v1 conversion only; original survives any failure before replacement."""
+        with self._locked():
+            profiles = self._parse(self._document())
+            key_id, _ = self.provider.create()
+            self._write(profiles, key_id)
+
+    def _change(self, profile: ResidentProfile | None, resident_id: str | None = None) -> None:
+        with self._locked():
+            profiles, key_id = self._load()
             if profile is not None:
                 if any(
                     p.resident_id == profile.resident_id
@@ -151,9 +210,9 @@ class LocalIdentityStore:
                 if not any(p.resident_id == resident_id for p in profiles):
                     raise IdentityError("resident ID not found")
                 profiles = tuple(p for p in profiles if p.resident_id != resident_id)
-            self._write(profiles)
-        finally:
-            lock.unlink(missing_ok=True)
+            if key_id is None:
+                key_id, _ = self.provider.create()
+            self._write(profiles, key_id)
 
     def add(self, profile: ResidentProfile) -> None:
         self._change(profile)
