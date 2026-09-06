@@ -57,6 +57,7 @@ class _MotionTrack:
     confirmed_at: datetime | None = None
     last_observed_box: BoundingBox | None = None
     reactivated: bool = False
+    continuity_epoch: int = 0
 
 
 class KalmanPersonTracker:
@@ -160,6 +161,7 @@ class KalmanPersonTracker:
                 t.missed_frames,
                 t.lifecycle != TrackState.TENTATIVE,
                 t.lifecycle == TrackState.RECENTLY_LOST,
+                t.continuity_epoch,
             )
             for t in tracks
         )
@@ -285,6 +287,8 @@ class KalmanPersonTracker:
                             else None
                         ),
                         reactivated=track.lifecycle == TrackState.RECENTLY_LOST,
+                        continuity_epoch=track.continuity_epoch
+                        + int(track.lifecycle == TrackState.RECENTLY_LOST),
                         appearance_at=context.captured_at if self._use_appearance else None,
                         appearance_similarity=similarity,
                         motion=motion,

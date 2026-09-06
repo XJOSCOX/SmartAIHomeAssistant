@@ -104,6 +104,7 @@ class PersonTrack:
     missed_frames: int = 0
     confirmed: bool = True
     recently_lost: bool = False
+    continuity_epoch: int = 0
 
     def __post_init__(self) -> None:
         _identifier(self.track_id, "track_id")
@@ -118,6 +119,12 @@ class PersonTrack:
             self.recently_lost and (not self.confirmed or self.missed_frames == 0)
         ):
             raise ValueError("recently_lost must describe a confirmed missed track")
+        if (
+            isinstance(self.continuity_epoch, bool)
+            or not isinstance(self.continuity_epoch, int)
+            or self.continuity_epoch < 0
+        ):
+            raise ValueError("continuity_epoch must be a non-negative integer")
         if not isinstance(self.confirmed, bool):
             raise ValueError("confirmed must be a boolean")
 

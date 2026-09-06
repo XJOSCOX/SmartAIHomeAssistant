@@ -32,3 +32,6 @@ recordings/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Sensitive local resident face templates
+.jake-identities/

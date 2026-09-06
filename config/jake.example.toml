@@ -53,3 +53,23 @@ min_similarity = 0.65
 max_center_distance = 0.30
 appearance_weight = 0.7
 motion_weight = 0.3
+
+[identity]
+# Opt in with --identity; enrollment is a separate deliberate CLI action.
+# These local files must be installed explicitly; Jake never downloads them.
+detector_model = "models/face_detection_yunet_2023mar.onnx"
+encoder_model = "models/face_recognition_sface_2021dec.onnx"
+# Dedicated private directory; plaintext biometric templates, not encrypted yet.
+store_path = ".jake-identities"
+candidate_similarity = 0.45
+resident_similarity = 0.60
+ambiguity_margin = 0.08
+required_confirmations = 3
+confirmation_window_seconds = 3.0
+observation_interval_seconds = 0.3
+carry_seconds = 2.0
+min_face_pixels = 64
+min_sharpness = 80.0
+min_detector_confidence = 0.9
+enrollment_samples = 10
+duplicate_similarity = 0.995

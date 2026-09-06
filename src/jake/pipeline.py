@@ -5,6 +5,8 @@ from collections.abc import Iterator
 from jake.appearance import encode_detections
 from jake.config import PipelineConfig
 from jake.domain import Frame, FrameContext, PersonEvent
+from jake.face_identity import FaceIdentityService
+from jake.identity_domain import IdentityEvent, IdentityMatch
 from jake.ports import AppearanceEncoder, EventGenerator, FrameSource, PersonDetector, PersonTracker
 
 
@@ -24,12 +26,16 @@ class PerceptionPipeline:
         events: EventGenerator,
         *,
         encoder: AppearanceEncoder | None = None,
+        identity: FaceIdentityService | None = None,
     ) -> None:
         self._config = config
         self._detector = detector
         self._tracker = tracker
         self._events = events
         self._encoder = encoder
+        self._identity = identity
+        self.identity_matches: dict[str, IdentityMatch] = {}
+        self.identity_events: tuple[IdentityEvent, ...] = ()
         self._last_sequence: int | None = None
 
     def process(self, frame: Frame) -> tuple[PersonEvent, ...]:
@@ -48,6 +54,8 @@ class PerceptionPipeline:
         if self._encoder is not None:
             detections = encode_detections(frame, detections, self._encoder)
         tracks = self._tracker.update(context, detections)
+        if self._identity is not None:
+            self.identity_matches, self.identity_events = self._identity.process(frame, tracks)
         return self._events.generate(context, tracks)
 
     def run(self, source: FrameSource) -> Iterator[PersonEvent]:

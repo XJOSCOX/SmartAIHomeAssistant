@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from math import isfinite
 from pathlib import Path
 
+from jake.identity_config import IdentityConfig
+
 
 @dataclass(frozen=True, slots=True)
 class PipelineConfig:
@@ -219,6 +221,7 @@ class AppConfig:
     detector: DetectorConfig = DetectorConfig()
     tracking: TrackingConfig = TrackingConfig()
     events: EventConfig = EventConfig()
+    identity: IdentityConfig = IdentityConfig()
 
 
 def load_config(path: Path) -> PipelineConfig:
@@ -234,12 +237,17 @@ def load_app_config(path: Path) -> AppConfig:
     """
     with path.open("rb") as stream:
         data = tomllib.load(stream)
-    if set(data) - {"pipeline", "camera", "detector", "tracking", "events"} or not isinstance(
-        data.get("pipeline"), dict
-    ):
+    if set(data) - {
+        "pipeline",
+        "camera",
+        "detector",
+        "tracking",
+        "events",
+        "identity",
+    } or not isinstance(data.get("pipeline"), dict):
         raise ValueError(
             "configuration requires [pipeline] and permits "
-            "[camera], [detector], [tracking], [events]"
+            "[camera], [detector], [tracking], [events], [identity]"
         )
     pipeline = data["pipeline"]
     if set(pipeline) - {"camera_id", "min_person_confidence"}:
@@ -295,6 +303,9 @@ def load_app_config(path: Path) -> AppConfig:
     events = data.get("events", {})
     if not isinstance(events, dict) or set(events) - {"present_interval_seconds"}:
         raise ValueError("[events] permits only present_interval_seconds")
+    identity = data.get("identity", {})
+    if not isinstance(identity, dict) or set(identity) - set(IdentityConfig.__dataclass_fields__):
+        raise ValueError("unknown setting or invalid table in [identity]")
     return AppConfig(
         pipeline_config,
         CameraConfig(device=camera.get("device", 0)),
@@ -324,4 +335,5 @@ def load_app_config(path: Path) -> AppConfig:
             },
         ),
         EventConfig(present_interval_seconds=events.get("present_interval_seconds", 5.0)),
+        IdentityConfig(**identity),
     )

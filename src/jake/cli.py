@@ -10,6 +10,7 @@ from jake.adapters.person_events import EventError, PersonEventGenerator
 from jake.appearance import AppearanceError
 from jake.config import load_app_config
 from jake.event_console import log_event
+from jake.identity import IdentityError
 from jake.ports import PersonTracker
 
 
@@ -38,7 +39,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=None,
         help="Retain recently-lost appearance tracks",
     )
+    parser.add_argument(
+        "--identity", action="store_true", help="Enable enrolled local face identity"
+    )
     args = parser.parse_args(argv)
+    if args.identity and not args.track:
+        parser.error("--identity requires --track")
     if args.appearance is True and not (args.track and args.tracker == "kalman"):
         parser.error("--appearance requires --track --tracker kalman")
     if args.events and not args.track:
@@ -119,6 +125,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                     diagnostics = motion_tracker.diagnostics
             else:
                 tracker = IoUPersonTracker(config.tracking)
+        identity = None
+        if args.identity:
+            from jake.adapters.local_identity_store import LocalIdentityStore
+            from jake.adapters.opencv_faces import SFaceEncoder, YuNetFaceDetector, face_quality
+            from jake.face_identity import FaceIdentityService
+
+            identity = FaceIdentityService(
+                config.identity,
+                YuNetFaceDetector(config.identity),
+                SFaceEncoder(config.identity),
+                LocalIdentityStore(Path(config.identity.store_path)),
+                face_quality,
+            )
         preview(
             config,
             detector,
@@ -127,6 +146,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             events=PersonEventGenerator(config.events) if args.events else None,
             event_sink=log_event if args.events else None,
             encoder=encoder,
+            identity=identity,
         )
     except KeyboardInterrupt:
         print("\nCamera preview stopped.")
@@ -137,6 +157,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         TrackerError,
         EventError,
         AppearanceError,
+        IdentityError,
         cv2.error,
     ) as exc:
         print(f"Camera preview error: {exc}", file=sys.stderr)

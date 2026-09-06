@@ -13,6 +13,7 @@ from jake.appearance import encode_detections
 from jake.config import AppConfig
 from jake.diagnostics import TrackDiagnostic, measure_detection
 from jake.domain import FrameContext, PersonDetection, PersonEvent, PersonTrack
+from jake.face_identity import FaceIdentityService
 from jake.ports import AppearanceEncoder, EventGenerator, PersonDetector, PersonTracker
 
 WINDOW = "Jake local camera - q/Q to quit"
@@ -49,6 +50,7 @@ def preview(
     events: EventGenerator | None = None,
     event_sink: Callable[[PersonEvent], None] | None = None,
     encoder: AppearanceEncoder | None = None,
+    identity: FaceIdentityService | None = None,
 ) -> None:
     """Display frames on the main thread, with no recording or persistence."""
     if tracker is not None and detector is None:
@@ -57,6 +59,8 @@ def preview(
         raise ValueError("event preview requires a tracker and event sink")
     if encoder is not None and tracker is None:
         raise ValueError("appearance preview requires a tracker")
+    if identity is not None and tracker is None:
+        raise ValueError("identity preview requires tracking")
     with OpenCVCamera(config.pipeline.camera_id, config.camera) as camera:
         try:
             cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
@@ -85,6 +89,26 @@ def preview(
                                 1,
                             )
                         tracks = tracker.update(context, detections)
+                        if identity is not None:
+                            identities, identity_events = identity.process(frame, tracks)
+                            for item in identity_events:
+                                print(
+                                    f"{item.kind} track={item.track_id} "
+                                    f"resident_id={item.match.resident_id} state={item.match.state}"
+                                )
+                            for index, (track_id, match) in enumerate(identities.items()):
+                                label = (
+                                    f"ID {track_id} | {match.display_name or ''} | {match.state}"
+                                )
+                                cv2.putText(
+                                    display,
+                                    label,
+                                    (10, frame.height - 35 - index * 20),
+                                    cv2.FONT_HERSHEY_SIMPLEX,
+                                    0.5,
+                                    (255, 255, 0),
+                                    1,
+                                )
                         if events is not None and event_sink is not None:
                             for event in events.generate(context, tracks):
                                 event_sink(event)

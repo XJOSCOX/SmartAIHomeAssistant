@@ -466,3 +466,28 @@ def test_reid_cli_selection(
     assert main(["--config", str(path), "--track", "--tracker", "kalman", flag]) == 0
     assert tracker_factory.call_count == int(flag == "--reid")
     assert main(["--config", str(path), "--reid"]) == 2
+
+
+def test_identity_cli_wiring(
+    desktop: dict[str, Mock], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from jake.identity_domain import IdentityMatch, IdentityState
+
+    with pytest.raises(SystemExit):
+        main(["--identity"])
+    detector, service = Mock(), Mock()
+    detector.return_value.detect.return_value = ()
+    service.return_value.process.return_value = (
+        {"7": IdentityMatch(IdentityState.RESIDENT, "resident", "Joseph", 0.9)},
+        (),
+    )
+    monkeypatch.setattr("jake.adapters.yolo_detector.YoloPersonDetector", detector)
+    monkeypatch.setattr("jake.adapters.opencv_faces.YuNetFaceDetector", Mock())
+    monkeypatch.setattr("jake.adapters.opencv_faces.SFaceEncoder", Mock())
+    monkeypatch.setattr("jake.face_identity.FaceIdentityService", service)
+    path = tmp_path / "config.toml"
+    path.write_text('[pipeline]\ncamera_id="test"', encoding="utf-8")
+    assert main(["--config", str(path), "--track", "--identity"]) == 0
+    labels = [call.args[1] for call in desktop["putText"].call_args_list]
+    assert "ID 7 | Joseph | RESIDENT" in labels
+    desktop["capture"].release.assert_called_once()
