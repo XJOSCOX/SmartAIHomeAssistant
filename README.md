@@ -58,6 +58,11 @@ Phase 2D visitor persistence defaults **off**. It requires five quality-approved
 confidently non-resident face observations, never just an UNKNOWN frame. Visits follow
 semantic ENTERED/LEFT events, with body ReID preserving the same visit. Resident
 ambiguity blocks visitor learning; names require explicit operator labeling.
+Transient resident ambiguity now pauses collection rather than blocking the whole
+visit; confirmed/repeated strong resident evidence still blocks it. Visitor detector
+confidence defaults to `min_detector_confidence=0.90`, while legacy explicit
+`min_face_quality` settings retain their values. `--debug-visitors` exposes per-track
+rejection reasons, recovery support, and candidate progress without biometric vectors.
 See [visitor memory design and management](docs/visitor-memory.md) for thresholds,
 retention, consent considerations, statistics, encryption, and deletion limitations.
 Existing encrypted resident stores require no migration or rewrite.

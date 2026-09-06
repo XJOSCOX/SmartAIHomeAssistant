@@ -308,6 +308,13 @@ def load_app_config(path: Path) -> AppConfig:
         raise ValueError("[events] permits only present_interval_seconds")
     identity = data.get("identity", {})
     visitors = data.get("visitors", {})
+    if isinstance(visitors, dict) and "min_face_quality" in visitors:
+        if "min_detector_confidence" in visitors:
+            raise ValueError(
+                "use only visitors.min_detector_confidence; min_face_quality is its legacy alias"
+            )
+        visitors = {**visitors}
+        visitors["min_detector_confidence"] = visitors.pop("min_face_quality")
     if not isinstance(visitors, dict) or set(visitors) - set(VisitorConfig.__dataclass_fields__):
         raise ValueError("unknown setting or invalid table in [visitors]")
     if not isinstance(identity, dict) or set(identity) - set(IdentityConfig.__dataclass_fields__):

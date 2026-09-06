@@ -497,11 +497,13 @@ def test_visitor_cli_opt_in_and_preview(
     desktop: dict[str, Mock],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     from jake.identity_domain import IdentityMatch, IdentityState
     from jake.visitor_domain import VisitorMatch, VisitorState
 
     detector, identity, visitors = Mock(), Mock(), Mock()
+    visitors.return_value.diagnostics = {"7": "candidate 2/5"}
     detector.return_value.detect.return_value = ()
     identity.return_value.process.return_value = ({"7": IdentityMatch(IdentityState.UNKNOWN)}, ())
     identity.return_value.visitor_observations = {}
@@ -521,7 +523,10 @@ def test_visitor_cli_opt_in_and_preview(
     path = tmp_path / "config.toml"
     path.write_text('[pipeline]\ncamera_id="test"', encoding="utf-8")
     assert main(["--config", str(path), "--visitors"]) == 2
-    assert main(["--config", str(path), "--track", "--visitors"]) == 0
+    assert main(["--config", str(path), "--track", "--visitors", "--debug-visitors"]) == 0
+    output = capsys.readouterr().out
+    assert "VISITOR track=7 candidate 2/5" in output
+    assert "embedding" not in output and "values" not in output
     assert identity.call_args.kwargs["collect_visitors"] is True
     assert visitors.call_args.args[0].enabled is True
     labels = [call.args[1] for call in desktop["putText"].call_args_list]

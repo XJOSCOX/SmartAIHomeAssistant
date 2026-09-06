@@ -59,9 +59,9 @@ live writer per store; multi-hub synchronization is not implemented.
 Every valid face observation is matched against enrolled residents first. UNKNOWN
 alone does not establish non-residency: a tie between residents can produce UNKNOWN.
 Visitor learning requires cosine similarity **below the resident candidate threshold
-(default 0.45) against every resident template**. Any plausible resident evidence or
-resident CANDIDATE/RESIDENT result blocks visitor learning for that entire presence
-session, even if subsequent results become UNKNOWN. The service checks the final
+(default 0.45) against every resident template**. RESIDENT permanently blocks learning
+for that visit. Transient resident ambiguity pauses learning and clears samples; it
+does not poison the entire visit. The service checks the final
 visitor centroid against residents too, since averaging can change similarities.
 
 There is no mathematical proof that a face below threshold is a non-resident. These
@@ -71,8 +71,21 @@ compare incompatible vectors. Changes to resident enrollment require restarting
 live sessions to reload the existing resident cache.
 
 All Phase 2B size, sharpness, clipping, landmark/pose, and confidence checks run before
-encoding. Visitor `min_face_quality=0.95` is an **additional detector confidence floor**,
-not an aggregate quality probability. Rejected faces never enter the candidate buffer.
+encoding. Visitor `min_detector_confidence=0.90` is an **additional detector confidence
+floor**, not an aggregate quality probability. Rejected faces never enter the buffer.
+The new default matches Jake's existing identity confidence floor and the 0.90 starting
+point in the [official YuNet demo](https://github.com/opencv/opencv_zoo/blob/main/models/face_detection_yunet/demo.py).
+It removes the extra rejection of otherwise quality-approved observations between
+0.90 and 0.95. Resolution alone does not establish a calibrated threshold: there is
+no claim that 0.95 is universally unsuitable for 720p/1080p, or that this change has
+been physically validated. Size, sharpness, pose, clipping, identity similarity,
+temporal confirmation and final-centroid checks remain unchanged.
+
+The legacy TOML key `min_face_quality` remains an alias. Its explicit value is preserved,
+so an existing file with `min_face_quality=0.95` still uses 0.95. Configuring both names
+is rejected. No local settings or biometric store is silently rewritten. The effective
+detector floor is the higher of the identity and visitor settings; diagnostics show
+the actual gate responsible for rejection.
 
 ## Confirmation and false-merge protections
 
@@ -83,7 +96,10 @@ not an aggregate quality probability. Rejected faces never enter the candidate b
 | `observation_window_seconds` | 10.0 | Rolling confirmation window |
 | `observation_interval_seconds` | 0.5 | Minimum observation spacing |
 | `carry_seconds` | 2.0 | Short display carry without a new quality-approved face |
-| `min_face_quality` | 0.95 | Additional detector-confidence floor |
+| `min_detector_confidence` | 0.90 | Additional detector-confidence floor |
+| `resident_candidate_confirmations` | 3 | Fresh strong comparisons to one resident before blocking |
+| `resident_candidate_window_seconds` | 3.0 | Rolling strong-evidence window |
+| `nonresident_recovery_observations` | 3 | Spaced nonresident observations needed after a pause |
 | `match_similarity` | 0.70 | Conservative visitor cosine threshold |
 | `ambiguity_margin` | 0.10 | Separation from runner-up and uncertainty band |
 | `recurring_visit_count` | 2 | Distinct confirmed visits needed for recurring status |
@@ -92,6 +108,43 @@ not an aggregate quality probability. Rejected faces never enter the candidate b
 These defaults demand more evidence than resident recognition; they are not calibrated
 probabilities or guarantees. Configuration validates types, finite/ranged values,
 minimum observation counts and feasibility of the observation window.
+
+Resident evidence is tracked explicitly: verified-resident status, a same-resident
+strong-candidate count/timestamps, pause state, and nonresident recovery support.
+Only fresh quality-approved comparisons at or above `identity.resident_similarity`
+(default 0.60) count as strong; they must be spaced by the visitor observation interval.
+Three within three seconds permanently block that visit. Carried CANDIDATE display
+states never count as new face observations. Changing the resident candidate or
+receiving weak fresh resident evidence clears the strong sequence.
+
+A single/weak/ambiguous resident comparison pauses collection. Recovery requires three
+quality-approved, confidently nonresident observations spaced at least 0.5 seconds
+apart; a gap beyond the visitor observation window resets recovery progress. Recovery
+samples are discarded, then five new visitor observations are required. Reappearing
+resident ambiguity resets recovery. Confirmed or repeatedly strong resident evidence
+cannot be cleared this way. A plausibly resident final centroid still prevents
+persistence and returns the visit to a paused state.
+
+## Visitor diagnostics
+
+`--debug-visitors` prints changed per-track reasons in the development console and
+works with every tracker mode. `--debug-tracks` also enables those diagnostics when
+visitor memory is enabled. Normal preview output remains unchanged. Example lines:
+
+```text
+VISITOR track=3 rejected face too small
+VISITOR track=3 rejected detector confidence 0.87 < 0.90
+VISITOR track=3 paused possible resident similarity 0.48
+VISITOR track=3 recovering nonresident 2/3
+VISITOR track=3 candidate 2/5
+VISITOR track=3 blocked resident confirmed
+VISITOR track=3 confirmed FIRST_TIME_VISITOR
+```
+
+Diagnostics include scalar confidence/similarity, progress, and explicit quality or
+matching rejection reasons, never biometric vectors or crops. They are session-local,
+not part of encrypted storage. For future validation after review, append
+`--debug-visitors` to the live command above. No camera execution is part of this fix.
 
 Unit vectors use cosine `s = dot(a, b)`. Existing visitor matching requires a score
 of at least 0.70 and a gap of at least 0.10 to the runner-up. Scores in the uncertainty
@@ -152,8 +205,9 @@ debug/management use. Metadata console output can still disclose household prese
 Process restarts do not synthesize LEFT or resume old tracking sessions. A subsequent
 confirmed session can count as another visit even if it was physically continuous
 across restart. Unfinished visits keep their count but do not add a duration sample.
-Uncertain resident evidence after visitor association prevents further learning and
-duration updates for that session; existing stored profiles are not automatically
+Unresolved resident evidence after visitor association pauses further learning and
+duration updates until recovery; permanently blocked visits omit duration updates.
+Existing stored profiles are not automatically
 deleted or converted into residents.
 
 ## Statistics without visit histories

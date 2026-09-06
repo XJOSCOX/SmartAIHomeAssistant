@@ -54,6 +54,7 @@ def preview(
     encoder: AppearanceEncoder | None = None,
     identity: FaceIdentityService | None = None,
     visitors: VisitorMemory | None = None,
+    debug_visitors: bool = False,
 ) -> None:
     """Display frames on the main thread, with no recording or persistence."""
     if tracker is not None and detector is None:
@@ -66,6 +67,7 @@ def preview(
         raise ValueError("identity preview requires tracking")
     if visitors is not None and (identity is None or events is None):
         raise ValueError("visitor preview requires identity and person events")
+    previous_visitor_diagnostics: dict[str, str] = {}
     with OpenCVCamera(config.pipeline.camera_id, config.camera) as camera:
         try:
             cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
@@ -106,7 +108,14 @@ def preview(
                                     identity.visitor_observations,
                                     identity.visitor_blocked,
                                     identities,
+                                    resident_evidence=identity.visitor_resident_evidence,
+                                    face_diagnostics=identity.visitor_diagnostics,
                                 )
+                                if debug_visitors or track_diagnostics is not None:
+                                    for track_id, reason in visitors.diagnostics.items():
+                                        if previous_visitor_diagnostics.get(track_id) != reason:
+                                            print(f"VISITOR track={track_id} {reason}")
+                                    previous_visitor_diagnostics = dict(visitors.diagnostics)
                                 identity.visitor_observations.clear()
                                 for visitor_event in visitor_events:
                                     print(

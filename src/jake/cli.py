@@ -48,6 +48,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=None,
         help="Opt in to encrypted anonymous visitor memory (requires --track)",
     )
+    parser.add_argument(
+        "--debug-visitors",
+        action="store_true",
+        help="Print visitor evidence/rejection diagnostics without vectors",
+    )
     args = parser.parse_args(argv)
     if args.identity and not args.track:
         parser.error("--identity requires --track")
@@ -69,6 +74,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             if not args.track:
                 raise ValueError("visitor memory requires --track")
             args.identity = True
+        if args.debug_visitors and not config.visitors.enabled:
+            raise ValueError("--debug-visitors requires visitor memory enabled")
         if args.reid is not None:
             config = replace(
                 config,
@@ -177,6 +184,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             encoder=encoder,
             identity=identity,
             visitors=visitors,
+            debug_visitors=args.debug_visitors,
         )
     except KeyboardInterrupt:
         print("\nCamera preview stopped.")

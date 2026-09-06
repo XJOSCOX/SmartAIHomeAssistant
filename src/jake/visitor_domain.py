@@ -115,3 +115,12 @@ class VisitorObservation:
     def __post_init__(self) -> None:
         if not isfinite(self.detector_confidence) or not 0 <= self.detector_confidence <= 1:
             raise ValueError("invalid visitor observation confidence")
+
+
+@dataclass(frozen=True, slots=True)
+class ResidentEvidence:
+    """Fresh quality-approved resident comparison; no biometric vector."""
+
+    resident_id: str
+    similarity: float
+    strong: bool

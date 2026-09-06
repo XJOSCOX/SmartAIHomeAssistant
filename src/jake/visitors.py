@@ -10,6 +10,7 @@ from jake.identity import IdentityError, face_cosine, face_normalize
 from jake.identity_domain import FaceEmbedding, IdentityMatch, IdentityState
 from jake.visitor_config import VisitorConfig
 from jake.visitor_domain import (
+    ResidentEvidence,
     VisitorEvent,
     VisitorMatch,
     VisitorObservation,
@@ -43,9 +44,22 @@ class _Visit:
     samples: list[tuple[datetime, FaceEmbedding]] = field(default_factory=list)
     visitor_id: str | None = None
     verified: bool = False
-    resident_possible: bool = False
+    resident_verified: bool = False
+    resident_candidate_count: int = 0
+    resident_candidate_id: str | None = None
+    resident_candidate_times: list[datetime] = field(default_factory=list)
+    resident_paused: bool = False
+    nonresident_support: int = 0
+    last_nonresident_at: datetime | None = None
     last_proof: datetime | None = None
     target: str | None = None
+
+    def pause(self) -> None:
+        self.resident_paused = True
+        self.verified = False
+        self.samples.clear()
+        self.nonresident_support = 0
+        self.last_nonresident_at = None
 
 
 class VisitorMemory:
@@ -61,6 +75,7 @@ class VisitorMemory:
         self.is_nonresident = is_nonresident
         self._visits: dict[str, _Visit] = {}
         self._last: FrameContext | None = None
+        self.diagnostics: dict[str, str] = {}
 
     def process(
         self,
@@ -70,9 +85,16 @@ class VisitorMemory:
         observations: dict[str, VisitorObservation],
         blocked: set[str],
         identities: dict[str, IdentityMatch],
+        *,
+        resident_evidence: dict[str, ResidentEvidence] | None = None,
+        face_diagnostics: dict[str, str] | None = None,
     ) -> tuple[dict[str, VisitorMatch], tuple[VisitorEvent, ...]]:
         if not self.config.enabled:
             return {}, ()
+        self.diagnostics = {
+            t.track_id: (face_diagnostics or {}).get(t.track_id, "waiting for face observation")
+            for t in tracks
+        }
         now = context.captured_at.astimezone(UTC)
         if self._last and (
             context.camera_id != self._last.camera_id
@@ -107,7 +129,7 @@ class VisitorMemory:
                 visit = self._visits.pop(event.track_id, None)
                 if visit and visit.visitor_id in profiles:
                     profile = profiles[visit.visitor_id]
-                    if not visit.resident_possible:
+                    if not visit.resident_verified and not visit.resident_paused:
                         duration = (now - visit.entered_at).total_seconds()
                         profile = replace(
                             profile,
@@ -127,24 +149,68 @@ class VisitorMemory:
             results[track_id] = VisitorMatch()
             visit = self._visits.get(track_id)
             if visit is None:
+                self.diagnostics[track_id] = "waiting for semantic ENTERED"
                 continue
-            if (
-                track_id in blocked
-                or identities.get(track_id, IdentityMatch(IdentityState.UNKNOWN)).state
-                != IdentityState.UNKNOWN
-            ):
-                visit.resident_possible = True
+            identity = identities.get(track_id, IdentityMatch(IdentityState.UNKNOWN))
+            if identity.state == IdentityState.RESIDENT:
+                visit.resident_verified = True
+                visit.pause()
+            if visit.resident_verified:
+                self.diagnostics[track_id] = "blocked resident confirmed"
+                continue
+            if visit.resident_candidate_count >= self.config.resident_candidate_confirmations:
+                self.diagnostics[track_id] = "blocked repeated strong resident evidence"
+                continue
             if track.continuity_epoch != visit.epoch or track.recently_lost:
                 visit.epoch, visit.verified = track.continuity_epoch, False
                 visit.samples.clear()
-            if visit.resident_possible or not track.visible or not track.confirmed:
+            if not track.visible or not track.confirmed:
                 visit.samples.clear()
+                self.diagnostics[track_id] = "waiting for visible confirmed track"
+                continue
+            evidence = (resident_evidence or {}).get(track_id)
+            if (
+                track_id in blocked
+                or identity.state == IdentityState.CANDIDATE
+                or evidence is not None
+            ):
+                visit.pause()
+                # Only fresh, spaced comparisons count; carried CANDIDATE states do not.
+                if evidence is not None:
+                    if not evidence.strong or visit.resident_candidate_id != evidence.resident_id:
+                        visit.resident_candidate_times.clear()
+                    visit.resident_candidate_id = evidence.resident_id
+                    visit.resident_candidate_times = [
+                        t
+                        for t in visit.resident_candidate_times
+                        if (now - t).total_seconds()
+                        <= self.config.resident_candidate_window_seconds
+                    ]
+                    if evidence.strong and (
+                        not visit.resident_candidate_times
+                        or (now - visit.resident_candidate_times[-1]).total_seconds()
+                        >= self.config.observation_interval_seconds
+                    ):
+                        visit.resident_candidate_times.append(now)
+                    visit.resident_candidate_count = len(visit.resident_candidate_times)
+                detail = f" similarity {evidence.similarity:.2f}" if evidence else ""
+                self.diagnostics[track_id] = (
+                    "blocked repeated strong resident evidence"
+                    if visit.resident_candidate_count
+                    >= self.config.resident_candidate_confirmations
+                    else f"paused possible resident{detail}"
+                )
                 continue
             observation = observations.get(track_id)
             if (
                 observation is None
-                or observation.detector_confidence < self.config.min_face_quality
+                or observation.detector_confidence < self.config.min_detector_confidence
             ):
+                if observation is not None:
+                    self.diagnostics[track_id] = (
+                        f"rejected detector confidence {observation.detector_confidence:.2f} "
+                        f"< {self.config.min_detector_confidence:.2f}"
+                    )
                 if (
                     visit.verified
                     and visit.visitor_id in profiles
@@ -157,8 +223,32 @@ class VisitorMemory:
                 continue
             embedding = observation.embedding
             if not self.is_nonresident(embedding):
-                visit.resident_possible = True
-                visit.samples.clear()
+                visit.pause()
+                self.diagnostics[track_id] = "paused possible resident comparison"
+                continue
+            if visit.resident_paused:
+                if (
+                    visit.last_nonresident_at is not None
+                    and (now - visit.last_nonresident_at).total_seconds()
+                    > self.config.observation_window_seconds
+                ):
+                    visit.nonresident_support = 0
+                if (
+                    visit.last_nonresident_at is None
+                    or (now - visit.last_nonresident_at).total_seconds()
+                    >= self.config.observation_interval_seconds
+                ):
+                    visit.nonresident_support += 1
+                    visit.last_nonresident_at = now
+                self.diagnostics[track_id] = (
+                    f"recovering nonresident {visit.nonresident_support}/"
+                    f"{self.config.nonresident_recovery_observations}"
+                )
+                if visit.nonresident_support >= self.config.nonresident_recovery_observations:
+                    visit.resident_paused = False
+                    visit.resident_candidate_times.clear()
+                    visit.resident_candidate_count = 0
+                # Recovery evidence is not reused as visitor confirmation evidence.
                 continue
             scores = sorted(
                 ((face_cosine(embedding, p.template), p.visitor_id) for p in profiles.values()),
@@ -174,18 +264,27 @@ class VisitorMemory:
                 ):
                     visit.samples.clear()
                     visit.verified = False
+                    self.diagnostics[track_id] = "paused ambiguous visitor similarity"
                     continue
                 selected = scores[0][1]
             if visit.visitor_id is not None and selected != visit.visitor_id:
+                self.diagnostics[track_id] = "paused conflicting visitor identity"
                 visit.samples.clear()
                 visit.verified = False
                 continue
             if selected is not None and any(
                 v.visitor_id == selected for k, v in self._visits.items() if k != track_id
             ):
+                self.diagnostics[track_id] = (
+                    "paused visitor profile already active on another track"
+                )
                 visit.samples.clear()
                 continue
             if visit.verified and visit.visitor_id in profiles:
+                state = visitor_match(
+                    profiles[visit.visitor_id], self.config.recurring_visit_count
+                ).state
+                self.diagnostics[track_id] = f"confirmed {state}"
                 visit.last_proof = now
                 profile = profiles[visit.visitor_id]
                 # Bound writes during long visits while keeping retention tied to evidence.
@@ -216,6 +315,9 @@ class VisitorMemory:
             ):
                 visit.samples.append((now, embedding))
             results[track_id] = VisitorMatch(VisitorState.VISITOR_CANDIDATE)
+            self.diagnostics[track_id] = (
+                f"candidate {len(visit.samples)}/{self.config.required_observations}"
+            )
             if len(visit.samples) >= self.config.required_observations:
                 # Every observation, not just its centroid, must agree with the proposed match.
                 if selected and any(
@@ -233,8 +335,8 @@ class VisitorMemory:
                     ),
                 )
                 if not self.is_nonresident(centroid):
-                    visit.resident_possible = True
-                    visit.samples.clear()
+                    visit.pause()
+                    self.diagnostics[track_id] = "paused final centroid plausibly resident"
                     results[track_id] = VisitorMatch()
                     continue
                 if selected is None and any(
@@ -242,6 +344,7 @@ class VisitorMemory:
                     >= self.config.match_similarity - self.config.ambiguity_margin
                     for p in profiles.values()
                 ):
+                    self.diagnostics[track_id] = "paused ambiguous visitor centroid"
                     visit.samples.clear()
                     results[track_id] = VisitorMatch()
                     continue
@@ -260,6 +363,7 @@ class VisitorMemory:
                 for other, (other_center, other_id) in ready.items()
             ):
                 self._visits[track_id].samples.clear()
+                self.diagnostics[track_id] = "paused simultaneous visitor conflict"
                 results[track_id] = VisitorMatch()
                 continue
             visit = self._visits[track_id]
@@ -286,4 +390,5 @@ class VisitorMemory:
             visit.visitor_id, visit.verified, visit.last_proof = profile.visitor_id, True, now
             visit.samples.clear()
             results[track_id] = visitor_match(profile, self.config.recurring_visit_count)
+            self.diagnostics[track_id] = f"confirmed {results[track_id].state}"
         return results, tuple(emitted)

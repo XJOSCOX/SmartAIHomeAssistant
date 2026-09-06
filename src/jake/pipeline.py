@@ -73,6 +73,8 @@ class PerceptionPipeline:
                     self._identity.visitor_observations,
                     self._identity.visitor_blocked,
                     self.identity_matches,
+                    resident_evidence=self._identity.visitor_resident_evidence,
+                    face_diagnostics=self._identity.visitor_diagnostics,
                 )
                 self._identity.visitor_observations.clear()
         return events

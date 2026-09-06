@@ -28,6 +28,7 @@ from jake.identity_domain import (
 from jake.identity_encryption import decrypt
 from jake.visitor_config import VisitorConfig
 from jake.visitor_domain import (
+    ResidentEvidence,
     VisitorEvent,
     VisitorObservation,
     VisitorProfile,
@@ -66,6 +67,7 @@ class Timeline:
         observations: dict[str, VisitorObservation] | None = None,
         blocked: set[str] | None = None,
         identities: dict[str, IdentityMatch] | None = None,
+        resident_evidence: dict[str, ResidentEvidence] | None = None,
     ) -> dict[str, object]:
         context = FrameContext("test", self.sequence, START + timedelta(seconds=seconds))
         self.sequence += 1
@@ -78,6 +80,7 @@ class Timeline:
             else {t.track_id: VisitorObservation(A, 0.99) for t in tracks},
             blocked or set(),
             identities or {},
+            resident_evidence=resident_evidence,
         )
         self.emitted.extend(events)
         return {k: v.state for k, v in result.items()}
@@ -174,7 +177,7 @@ def test_recurring_threshold_configurable(store: EncryptedVisitorStore) -> None:
     assert sum(e.kind == "VISITOR_BECAME_RECURRING" for e in t.emitted) == 1
 
 
-@pytest.mark.parametrize("identity", [IdentityState.CANDIDATE, IdentityState.RESIDENT])
+@pytest.mark.parametrize("identity", [IdentityState.RESIDENT])
 def test_resident_state_blocks_entire_visit(
     identity: IdentityState, store: EncryptedVisitorStore
 ) -> None:
@@ -486,3 +489,125 @@ def test_pipeline_visitor_events_stay_separate() -> None:
     assert pipeline.process(Frame("test", 0, START, 1, 1, bytes(3))) == ()
     visitors.process.assert_called_once()
     assert identity.visitor_observations == {}
+
+
+@pytest.mark.parametrize("transient", ["candidate", "blocked"])
+def test_transient_resident_evidence_recovers(transient: str, store: EncryptedVisitorStore) -> None:
+    t = Timeline(store)
+    t.step(
+        0,
+        blocked={"1"} if transient == "blocked" else set(),
+        identities={"1": IdentityMatch(IdentityState.CANDIDATE)}
+        if transient == "candidate"
+        else {},
+    )
+    assert "paused possible resident" in t.memory.diagnostics["1"]
+    for i in range(1, 4):
+        t.step(i)
+        assert f"recovering nonresident {i}/3" == t.memory.diagnostics["1"]
+        assert store.profiles() == ()
+    for i in range(4, 8):
+        t.step(i)
+        assert t.memory.diagnostics["1"] == f"candidate {i - 3}/5"
+    t.step(8)
+    assert t.memory.diagnostics["1"] == "confirmed FIRST_TIME_VISITOR"
+    assert len(store.profiles()) == 1
+
+
+def test_repeated_strong_fresh_resident_evidence_blocks(store: EncryptedVisitorStore) -> None:
+    t = Timeline(store)
+    evidence = ResidentEvidence(str(UUID(int=99)), 0.80, True)
+    for i in range(3):
+        t.step(i, observations={}, blocked={"1"}, resident_evidence={"1": evidence})
+    assert t.memory._visits["1"].resident_candidate_count == 3
+    for i in range(3, 15):
+        assert t.step(i)["1"] == VisitorState.UNKNOWN
+        assert t.memory.diagnostics["1"] == "blocked repeated strong resident evidence"
+    assert store.profiles() == ()
+
+
+def test_carried_candidate_is_not_fresh_evidence(store: EncryptedVisitorStore) -> None:
+    t = Timeline(store)
+    evidence = ResidentEvidence(str(UUID(int=99)), 0.80, True)
+    t.step(0, blocked={"1"}, resident_evidence={"1": evidence})
+    for i in range(1, 20):
+        t.step(i, observations={}, identities={"1": IdentityMatch(IdentityState.CANDIDATE)})
+    assert t.memory._visits["1"].resident_candidate_count == 1
+    for i in range(20, 28):
+        t.step(i)
+    assert len(store.profiles()) == 1
+
+
+def test_strong_evidence_requires_same_resident_and_spacing(store: EncryptedVisitorStore) -> None:
+    t = Timeline(store)
+    for i in range(8):
+        t.step(
+            i * 0.01,
+            blocked={"1"},
+            resident_evidence={"1": ResidentEvidence(str(UUID(int=99)), 0.8, True)},
+        )
+    assert t.memory._visits["1"].resident_candidate_count == 1
+    t.step(
+        1, blocked={"1"}, resident_evidence={"1": ResidentEvidence(str(UUID(int=100)), 0.8, True)}
+    )
+    assert t.memory._visits["1"].resident_candidate_count == 1
+    t.step(
+        10, blocked={"1"}, resident_evidence={"1": ResidentEvidence(str(UUID(int=100)), 0.8, True)}
+    )
+    assert t.memory._visits["1"].resident_candidate_count == 1
+
+
+def test_low_confidence_diagnostics_and_later_progress(store: EncryptedVisitorStore) -> None:
+    t = Timeline(store)
+    for i in range(5):
+        t.step(i, observations={"1": VisitorObservation(A, 0.87)})
+        assert t.memory.diagnostics["1"] == "rejected detector confidence 0.87 < 0.90"
+    assert store.profiles() == ()
+    for i in range(5, 10):
+        t.step(i, observations={"1": VisitorObservation(A, 0.92)})
+    assert len(store.profiles()) == 1
+
+
+def test_recovery_does_not_increment_existing_visit(store: EncryptedVisitorStore) -> None:
+    t = Timeline(store)
+    t.confirm()
+    t.step(5, blocked={"1"})
+    for i in range(6, 14):
+        t.step(i)
+    assert store.profiles()[0].visit_count == 1
+
+
+def test_visitor_confidence_config_alias(tmp_path: Path) -> None:
+    path = tmp_path / "settings.toml"
+    prefix = '[pipeline]\ncamera_id="test"\n[visitors]\n'
+    path.write_text(prefix + "min_face_quality=0.95", encoding="utf-8")
+    assert load_app_config(path).visitors.min_detector_confidence == 0.95
+    path.write_text(prefix + "min_detector_confidence=0.90", encoding="utf-8")
+    assert load_app_config(path).visitors.min_detector_confidence == 0.90
+    path.write_text(
+        prefix + "min_face_quality=0.95\nmin_detector_confidence=0.90", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="legacy alias"):
+        load_app_config(path)
+
+
+def test_face_rejection_diagnostics_have_no_vectors() -> None:
+    detector, encoder, residents = Mock(), Mock(), Mock()
+    detector.detect.return_value = (FaceDetection(TRACK.box, 0.87),)
+    residents.profiles.return_value = ()
+    service = FaceIdentityService(
+        IdentityConfig(),
+        detector,
+        encoder,
+        residents,
+        lambda *_: FaceQuality(False, "face too small"),
+        collect_visitors=True,
+    )
+    frame = Frame("test", 0, START, 1, 1, bytes(3))
+    service.process(frame, (TRACK,))
+    assert service.visitor_diagnostics["1"] == "rejected detector confidence 0.87 < 0.90"
+    detector.detect.return_value = (FaceDetection(TRACK.box, 0.99),)
+    service.process(replace(frame, sequence=1, captured_at=START + timedelta(seconds=1)), (TRACK,))
+    assert service.visitor_diagnostics["1"] == "rejected face too small"
+    encoder.encode.assert_not_called()
+    assert "values" not in repr(service.visitor_diagnostics)
