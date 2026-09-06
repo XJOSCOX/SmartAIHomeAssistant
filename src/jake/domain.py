@@ -1,7 +1,7 @@
 """Immutable, model-independent contracts shared by perception components."""
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from math import isfinite
 
@@ -82,10 +82,25 @@ class PersonTrack:
     track_id: str
     box: BoundingBox
     confidence: float
+    missed_frames: int = 0
+    confirmed: bool = True
 
     def __post_init__(self) -> None:
         _identifier(self.track_id, "track_id")
         _confidence(self.confidence)
+        if (
+            isinstance(self.missed_frames, bool)
+            or not isinstance(self.missed_frames, int)
+            or self.missed_frames < 0
+        ):
+            raise ValueError("missed_frames must be a non-negative integer")
+        if not isinstance(self.confirmed, bool):
+            raise ValueError("confirmed must be a boolean")
+
+    @property
+    def visible(self) -> bool:
+        """True only when this update has a matched or newly observed detection."""
+        return self.missed_frames == 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +120,7 @@ class FrameContext:
 
 class EventKind(StrEnum):
     PERSON_ENTERED = "person_entered"
+    PERSON_PRESENT = "person_present"
     PERSON_UPDATED = "person_updated"
     PERSON_LEFT = "person_left"
 
@@ -117,7 +133,25 @@ class PersonEvent:
     kind: EventKind
     context: FrameContext
     track_id: str
+    entered_at: datetime | None = None
 
     def __post_init__(self) -> None:
         _identifier(self.event_id, "event_id")
         _identifier(self.track_id, "track_id")
+        if self.entered_at is not None:
+            _timestamp(self.entered_at)
+            if self.entered_at.astimezone(UTC) > self.context.captured_at.astimezone(UTC):
+                raise ValueError("entered_at must not follow the event timestamp")
+
+    @property
+    def duration_seconds(self) -> float | None:
+        """Elapsed camera-timeline time; absent on legacy events without entry time."""
+        if self.entered_at is None:
+            return None
+        return (
+            self.context.captured_at.astimezone(UTC) - self.entered_at.astimezone(UTC)
+        ).total_seconds()
+
+    @property
+    def left_at(self) -> datetime | None:
+        return self.context.captured_at if self.kind == EventKind.PERSON_LEFT else None

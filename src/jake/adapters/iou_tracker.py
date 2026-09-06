@@ -24,7 +24,7 @@ class _TrackState:
     missed_frames: int = 0
 
     def public_track(self) -> PersonTrack:
-        return PersonTrack(self.track_id, self.box, self.confidence)
+        return PersonTrack(self.track_id, self.box, self.confidence, self.missed_frames)
 
 
 class IoUPersonTracker:

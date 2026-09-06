@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -44,8 +45,8 @@ def test_new_person_receives_incremental_id() -> None:
 def test_track_survives_limit_then_expires() -> None:
     tracker = IoUPersonTracker(TrackingConfig(max_missed_frames=2))
     first = tracker.update(context(0), (LEFT,))
-    assert tracker.update(context(1), ()) == first
-    assert tracker.update(context(2), ()) == first
+    assert tracker.update(context(1), ()) == (replace(first[0], missed_frames=1),)
+    assert tracker.update(context(2), ()) == (replace(first[0], missed_frames=2),)
     assert tracker.update(context(3), ()) == ()
     assert tracker.update(context(4), ()) == ()
 
@@ -56,8 +57,8 @@ def test_returning_before_expiration_keeps_id_and_resets_misses() -> None:
     tracker.update(context(1), ())
     tracker.update(context(2), ())
     assert tracker.update(context(3), (LEFT,)) == first
-    assert tracker.update(context(4), ()) == first
-    assert tracker.update(context(5), ()) == first
+    assert tracker.update(context(4), ()) == (replace(first[0], missed_frames=1),)
+    assert tracker.update(context(5), ()) == (replace(first[0], missed_frames=2),)
     assert tracker.update(context(6), ()) == ()
 
 
@@ -132,7 +133,7 @@ def test_rejected_context_does_not_mutate_state(invalid: FrameContext) -> None:
 def test_sequence_gaps_count_only_processed_updates() -> None:
     tracker = IoUPersonTracker(TrackingConfig(max_missed_frames=1))
     first = tracker.update(context(0), (LEFT,))
-    assert tracker.update(context(100), ()) == first
+    assert tracker.update(context(100), ()) == (replace(first[0], missed_frames=1),)
     assert tracker._tracks[0].age_frames == 2
     assert tracker.update(context(200), ()) == ()
 

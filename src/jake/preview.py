@@ -11,8 +11,8 @@ from numpy.typing import NDArray
 from jake.adapters.opencv_camera import OpenCVCamera
 from jake.config import AppConfig
 from jake.diagnostics import TrackDiagnostic, measure_detection
-from jake.domain import FrameContext, PersonDetection, PersonTrack
-from jake.ports import PersonDetector, PersonTracker
+from jake.domain import FrameContext, PersonDetection, PersonEvent, PersonTrack
+from jake.ports import EventGenerator, PersonDetector, PersonTracker
 
 WINDOW = "Jake local camera - q/Q to quit"
 
@@ -45,10 +45,14 @@ def preview(
     tracker: PersonTracker | None = None,
     *,
     track_diagnostics: Callable[[], tuple[TrackDiagnostic, ...]] | None = None,
+    events: EventGenerator | None = None,
+    event_sink: Callable[[PersonEvent], None] | None = None,
 ) -> None:
     """Display frames on the main thread, with no recording or persistence."""
     if tracker is not None and detector is None:
         raise ValueError("tracking preview requires a detector")
+    if events is not None and (tracker is None or event_sink is None):
+        raise ValueError("event preview requires a tracker and event sink")
     with OpenCVCamera(config.pipeline.camera_id, config.camera) as camera:
         try:
             cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
@@ -61,10 +65,14 @@ def preview(
                 display = np.asarray(cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), dtype=np.uint8)
                 if measurement is not None:
                     if tracker is not None:
+                        context = FrameContext(frame.camera_id, frame.sequence, frame.captured_at)
                         tracks = tracker.update(
-                            FrameContext(frame.camera_id, frame.sequence, frame.captured_at),
+                            context,
                             measurement.detections,
                         )
+                        if events is not None and event_sink is not None:
+                            for event in events.generate(context, tracks):
+                                event_sink(event)
                         draw_people(display, tracks)
                         if track_diagnostics is not None:
                             cv2.putText(

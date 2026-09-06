@@ -270,3 +270,65 @@ def test_assignment_flag_requires_tracking(desktop: dict[str, Mock]) -> None:
         main(["--assignment", "hungarian"])
     assert raised.value.code == 2
     desktop["VideoCapture"].assert_not_called()
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_cli_events_opt_in_and_expiration(
+    desktop: dict[str, Mock],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    enabled: bool,
+) -> None:
+    factory = Mock()
+    person = PersonDetection(BoundingBox(0.1, 0.5, 0.9, 1), 0.9)
+    factory.return_value.detect.side_effect = [(person,), (), (), ()]
+    monkeypatch.setattr("jake.adapters.yolo_detector.YoloPersonDetector", factory)
+    desktop["waitKey"].side_effect = [-1, -1, -1, ord("Q")]
+    path = tmp_path / "config.toml"
+    path.write_text(
+        '[pipeline]\ncamera_id = "test"\n[tracking]\nmax_missed_frames = 1', encoding="utf-8"
+    )
+    args = ["--config", str(path), "--track", "--tracker", "kalman", "--assignment", "hungarian"]
+    if enabled:
+        args.append("--events")
+    assert main(args) == 0
+    output = capsys.readouterr().out
+    assert output.count("ENTERED track=1") == int(enabled)
+    assert output.count("LEFT track=1 duration=") == int(enabled)
+    assert "PRESENT" not in output
+    desktop["capture"].release.assert_called_once_with()
+
+
+def test_events_require_tracking(desktop: dict[str, Mock]) -> None:
+    with pytest.raises(SystemExit) as raised:
+        main(["--events"])
+    assert raised.value.code == 2
+    with pytest.raises(ValueError, match="event preview requires"):
+        preview(AppConfig(PipelineConfig("test")), events=Mock())
+    desktop["VideoCapture"].assert_not_called()
+
+
+def test_event_failure_cleans_up_and_cli_reports(
+    desktop: dict[str, Mock],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from jake.adapters.person_events import EventError
+
+    factory = Mock()
+    factory.return_value.detect.return_value = ()
+    monkeypatch.setattr("jake.adapters.yolo_detector.YoloPersonDetector", factory)
+    event_factory = Mock()
+    event_factory.return_value.generate.side_effect = EventError("bad event timeline")
+    monkeypatch.setattr("jake.cli.PersonEventGenerator", event_factory)
+    path = tmp_path / "config.toml"
+    path.write_text(
+        '[pipeline]\ncamera_id = "test"\n[events]\npresent_interval_seconds = 7', encoding="utf-8"
+    )
+    assert main(["--config", str(path), "--track", "--events"]) == 1
+    assert event_factory.call_args.args[0].present_interval_seconds == 7
+    assert "bad event timeline" in capsys.readouterr().err
+    desktop["capture"].release.assert_called_once_with()
+    desktop["destroyWindow"].assert_called_once()

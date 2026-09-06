@@ -80,7 +80,7 @@ class KalmanPersonTracker:
             ) from exc
         self._tracks, self._next_id, self._last_context = tracks, next_id, context
         self._last_assignment_ms = assignment_ms
-        return tuple(PersonTrack(t.track_id, t.box, t.confidence) for t in tracks)
+        return tuple(PersonTrack(t.track_id, t.box, t.confidence, t.missed_frames) for t in tracks)
 
     def _advance(
         self, context: FrameContext, detections: tuple[PersonDetection, ...]

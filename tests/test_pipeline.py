@@ -1,5 +1,5 @@
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -118,3 +118,31 @@ def test_adapter_failure_propagates_without_downstream_calls() -> None:
         pipeline.process(frame())
     assert tracker.received == []
     assert events.received == []
+
+
+def test_semantic_events_through_existing_pipeline() -> None:
+    from jake.adapters.iou_tracker import IoUPersonTracker
+    from jake.adapters.person_events import PersonEventGenerator
+    from jake.config import EventConfig, TrackingConfig
+
+    class TimelineDetector:
+        def detect(self, frame: Frame) -> tuple[PersonDetection, ...]:
+            confidence = 0.9 if frame.sequence < 2 else 0.1
+            return (PersonDetection(BOX, confidence),)
+
+    pipeline = PerceptionPipeline(
+        PipelineConfig("test"),
+        TimelineDetector(),
+        IoUPersonTracker(TrackingConfig(max_missed_frames=1)),
+        PersonEventGenerator(EventConfig(5)),
+    )
+    source = (
+        Frame("test", sequence, NOW + timedelta(seconds=sequence * 5), 1, 1, b"abc")
+        for sequence in range(5)
+    )
+    events = tuple(pipeline.run(source))
+    assert [(event.kind, event.duration_seconds) for event in events] == [
+        (EventKind.PERSON_ENTERED, 0),
+        (EventKind.PERSON_PRESENT, 5),
+        (EventKind.PERSON_LEFT, 15),
+    ]

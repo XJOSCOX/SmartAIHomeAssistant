@@ -2,9 +2,8 @@
 
 Jake is the foundation for a privacy-first, local-first smart home AI system.
 The intended system will understand household events locally and eventually
-support natural conversation. **Phase 1E adds Jake-owned Hungarian global
-assignment to Kalman tracking. Greedy and IoU baselines remain available; track
-IDs are session-local, not resident identities.**
+support natural conversation. **Phase 1F adds semantic ENTERED, PRESENT, and LEFT events over tracked people.
+All tracker modes remain available; track IDs are session-local, not resident identities.**
 
 ## Phase 1 scope
 
@@ -18,8 +17,8 @@ Camera adapter → Frame → PersonDetector → PersonTracker → EventGenerator
 The production package defines immutable data contracts, structural interfaces,
 validated TOML configuration, synchronous pipeline orchestration, and a concrete
 OpenCV camera adapter, replaceable YOLO person detector, and Jake-owned tracker.
-The tracking preview uses `FrameSource → PersonDetector → PersonTracker → display`;
-event-generation algorithms remain future work. There are no recordings,
+The preview optionally routes tracks through a metadata-only event generator
+and logs semantic events locally with `--events`. There are no recordings,
 databases, identity recognition algorithms, or background services.
 
 ## Development
@@ -273,7 +272,7 @@ The pure functions in `matching.py` own geometry and assignment. `IoUPersonTrack
 implements the existing `PersonTracker` protocol and owns lifecycle state.
 It imports neither OpenCV nor Ultralytics, never calls YOLO's tracking API, and
 receives only metadata and structured detections. The preview contains no
-association or lifecycle state, and the public `PersonTrack` contract is unchanged.
+association or lifecycle state, and public tracks expose minimal visibility/confirmation metadata for events.
 
 ### Track lifecycle
 
@@ -400,8 +399,56 @@ switches for both. A gated-bottleneck regression demonstrates a case where globa
 matching preserves two connections while greedy creates a third ID.
 
 See [global assignment design](docs/global-assignment.md) for the algorithm,
-penalty policy, complexity, evaluation method, and limitations. Phase 1E still
-requires physical validation; no appearance or identity recognition is added.
+penalty policy, complexity, evaluation method, and limitations. Phase 1A–1E have been physically validated; no appearance or identity recognition is added.
+
+## Phase 1F: semantic person events
+
+After the local model setup above, run:
+
+```sh
+uv run --extra detection jake-camera --config config/local.toml --track --tracker kalman --assignment hungarian --events
+```
+
+For an already-installed environment without dependency synchronization:
+
+```sh
+uv run --offline --no-sync jake-camera --config config/local.toml --track --tracker kalman --assignment hungarian --events
+```
+
+Add this optional table to your existing local config (do not duplicate a table):
+
+```toml
+[events]
+present_interval_seconds = 5.0
+```
+
+Frames carry pixels; detections describe a single frame; tracks associate boxes
+across frames; events describe track presence transitions. `--events` requires
+`--track` and works with either tracker and either assignment strategy. The normal
+preview remains available with q/Q and Ctrl+C cleanup. Console output is opt-in:
+
+```text
+[18:00:00.132] ENTERED track=1
+[18:00:05.141] PRESENT track=1 duration=5.0s
+[18:00:18.421] LEFT track=1 duration=18.3s
+```
+
+ENTERED is emitted once on first confirmed visibility (current trackers confirm
+on the first detection). PRESENT is throttled per track, defaults to five seconds,
+and pauses while a track is missed. No catch-up burst occurs after a gap. LEFT is
+emitted once when the tracker removes the ID after its missed-frame allowance.
+Short occlusions preserve event state and do not generate another ENTERED.
+
+Entry, departure, and duration derive exclusively from frame timestamps. LEFT
+uses the expiration frame time, so duration includes the grace period and is an
+approximation of physical presence. Backward timestamps fail clearly; equal times
+are allowed. Shutdown does not fabricate departures. Tracker ID switches and
+false detections can affect the event stream; track IDs are not resident identities.
+
+Events contain metadata only and remain in memory; console logging does not
+persist video, images, or event files. No network or later-phase functionality is
+added. See [event state machine and timing design](docs/person-events.md) for the
+public lifecycle extension, local UUIDs, timing rules, and limitations.
 
 ## Repository layout
 
@@ -416,12 +463,14 @@ src/jake/
     yolo_detector.py  Local Ultralytics PersonDetector implementation
     iou_tracker.py   Jake-owned PersonTracker and internal lifecycle state
     kalman_tracker.py  Motion-aware PersonTracker using Jake's filter
+    person_events.py   Metadata-only EventGenerator and presence state machine
   kalman.py       Reusable NumPy linear Kalman mathematics
   motion.py       Constant-velocity box model and dt policy
   benchmarks.py   Deterministic synthetic tracker comparison
   matching.py     IoU geometry, strategy selection, and gated global matching
   hungarian.py    Jake-owned rectangular linear assignment solver
   diagnostics.py  Framework-independent detector timing
+  event_console.py  Opt-in semantic event console formatting
   preview.py      Local OpenCV display and development overlay
   cli.py          jake-camera entry point
   py.typed        Package type information marker
@@ -453,8 +502,8 @@ composition change, without modifying the tracker or pipeline.
   assignment and missed-frame expiry. Image-based tracking would require an
   explicit extension to the current metadata-only tracker contract.
 - `EventGenerator` receives metadata and active tracks, including empty updates.
-  The contract supports entered, updated, and left events. Transition logic,
-  deduplication, and event ID allocation are not implemented yet.
+  `PersonEventGenerator` implements entered, periodic present, and left events
+  with transition state, deduplication, and local UUID allocation.
 - `PerceptionPipeline.process()` returns events for a single frame; `run()` pulls
   a source lazily and yields events. It validates camera isolation and strictly
   increasing frame sequences. Gaps are allowed. It stores only the last sequence.
@@ -485,27 +534,34 @@ Copy `config/jake.example.toml` to `config/local.toml` (ignored by Git) for loca
 settings. Configuration loading is explicit and rejects unknown settings and
 invalid values. No environment variables or files are read on package import.
 
-The following is a composition sketch **requiring user-supplied adapters**:
+To consume structured events without the development preview (requires the
+detection extra and configured local model weights):
 
 ```python
 from pathlib import Path
 
 from jake.adapters.opencv_camera import OpenCVCamera
+from jake.adapters.kalman_tracker import KalmanPersonTracker
+from jake.adapters.person_events import PersonEventGenerator
+from jake.adapters.yolo_detector import YoloPersonDetector
 from jake.config import load_app_config
+from jake.event_console import log_event
 from jake.pipeline import PerceptionPipeline
 
 config = load_app_config(Path("config/local.toml"))
-# detector, tracker, and event_generator implement the protocols in jake.ports.
+detector = YoloPersonDetector(config.detector, config.pipeline.min_person_confidence)
+tracker = KalmanPersonTracker(config.tracking)
+event_generator = PersonEventGenerator(config.events)
 pipeline = PerceptionPipeline(config.pipeline, detector, tracker, event_generator)
 with OpenCVCamera(config.pipeline.camera_id, config.camera) as source:
     for event in pipeline.run(source):
-        handle_event(event)
+        log_event(event)  # Replace with your metadata consumer.
 ```
 
 The preview CLI uses the source directly; it does not instantiate this perception
 pipeline or fake detections. Existing callers of `load_config()` still receive
 `PipelineConfig`; `load_app_config()` also exposes `CameraConfig`, `DetectorConfig`,
-and `TrackingConfig`. Legacy configuration defaults to camera zero and the
+`TrackingConfig`, and `EventConfig`. Legacy configuration defaults to camera zero and the
 documented detector/tracker settings.
 Weights are checked only when detection is enabled. Both loaders
 validate the entire file and reject unknown sections/settings.
@@ -515,7 +571,7 @@ validate the entire file and reject unknown sections/settings.
 The current core performs no network access, telemetry, disk writes, or model
 downloads. Pixels stay in the detection stage and are omitted from frame repr;
 tracking and event generation receive metadata only. Events carry only an ID,
-event kind, camera/frame/time context, and session-local track ID. The core does
+event kind, camera/frame/time context, session-local track ID, and entry timestamp. The core does
 not retain frames after processing; callers and adapters control their own memory.
 This is data minimization, not a guarantee of secure memory erasure.
 
@@ -529,18 +585,18 @@ are ignored by Git; ignore rules are not an access-control mechanism.
 ## Roadmap
 
 The Phase 1 foundation, 1A acquisition, 1B detection, 1C IoU tracking, 1D
-Kalman-assisted tracking, and 1E global assignment are implemented.
+Kalman-assisted tracking, 1E global assignment, and 1F semantic events are implemented.
 Phase 1A was physically validated on Windows at approximately 19 FPS, 640×480,
 with advancing sequences and successful shutdown. Phase 1B was also physically
 validated with multiple people and CPU inference fast enough for development.
 Phase 1C has been physically validated with multiple people; crossing/occlusion
 ID losses establish the baseline. Phase 1D has been physically validated and works.
-Phase 1E global assignment is implemented and awaits physical validation. The sequence below is a planning
-outline, not a promise that later phases already exist.
+Phase 1E has also been physically validated. Phase 1F is tested synthetically and
+awaits physical validation. The sequence below is a planning outline.
 
 | Phase | Planned capabilities |
 | --- | --- |
-| 1 — perception | Foundation through 1E Hungarian/global assignment complete; event-generation algorithms remain future work |
+| 1 — perception | Foundation through 1F semantic person events implemented |
 | 2 — recognition | Resident recognition, frequent visitor recognition, delivery/visitor classification, with consent and identity-data controls |
 | 3 — understanding and memory | Activity recognition, event memory, household behavioral learning, anomaly detection, and governed continual learning |
 | 4 — voice and interaction | Speech recognition, text-to-speech, basic conversational AI, context-aware resident greetings, and daily/event summaries |

@@ -104,11 +104,27 @@ class TrackingConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class EventConfig:
+    present_interval_seconds: float = 5.0
+
+    def __post_init__(self) -> None:
+        value = self.present_interval_seconds
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not isfinite(value)
+            or value <= 0
+        ):
+            raise ValueError("events.present_interval_seconds must be a finite positive number")
+
+
+@dataclass(frozen=True, slots=True)
 class AppConfig:
     pipeline: PipelineConfig
     camera: CameraConfig = CameraConfig()
     detector: DetectorConfig = DetectorConfig()
     tracking: TrackingConfig = TrackingConfig()
+    events: EventConfig = EventConfig()
 
 
 def load_config(path: Path) -> PipelineConfig:
@@ -124,11 +140,12 @@ def load_app_config(path: Path) -> AppConfig:
     """
     with path.open("rb") as stream:
         data = tomllib.load(stream)
-    if set(data) - {"pipeline", "camera", "detector", "tracking"} or not isinstance(
+    if set(data) - {"pipeline", "camera", "detector", "tracking", "events"} or not isinstance(
         data.get("pipeline"), dict
     ):
         raise ValueError(
-            "configuration requires [pipeline] and permits [camera], [detector], [tracking]"
+            "configuration requires [pipeline] and permits "
+            "[camera], [detector], [tracking], [events]"
         )
     pipeline = data["pipeline"]
     if set(pipeline) - {"camera_id", "min_person_confidence"}:
@@ -165,6 +182,9 @@ def load_app_config(path: Path) -> AppConfig:
         **{name: kalman.get(name, getattr(noise_defaults, name)) for name in noise_fields}
     )
     tracking_defaults = TrackingConfig()
+    events = data.get("events", {})
+    if not isinstance(events, dict) or set(events) - {"present_interval_seconds"}:
+        raise ValueError("[events] permits only present_interval_seconds")
     return AppConfig(
         pipeline_config,
         CameraConfig(device=camera.get("device", 0)),
@@ -181,4 +201,5 @@ def load_app_config(path: Path) -> AppConfig:
             kalman=noise_config,
             assignment=tracking.get("assignment", tracking_defaults.assignment),
         ),
+        EventConfig(present_interval_seconds=events.get("present_interval_seconds", 5.0)),
     )

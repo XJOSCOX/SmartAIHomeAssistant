@@ -25,3 +25,7 @@ process_noise_velocity = 0.001
 measurement_noise = 0.001
 initial_position_variance = 0.01
 initial_velocity_variance = 1.0
+
+[events]
+# Emitted only for visible confirmed tracks; no catch-up bursts after missed frames.
+present_interval_seconds = 5.0

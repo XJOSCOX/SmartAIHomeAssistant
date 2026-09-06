@@ -6,7 +6,9 @@ from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 
+from jake.adapters.person_events import EventError, PersonEventGenerator
 from jake.config import load_app_config
+from jake.event_console import log_event
 from jake.ports import PersonTracker
 
 
@@ -19,10 +21,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--tracker", choices=("iou", "kalman"), default="iou")
     parser.add_argument("--assignment", choices=("greedy", "hungarian"), default=None)
+    parser.add_argument("--events", action="store_true", help="Log semantic person events locally")
     parser.add_argument(
         "--debug-tracks", action="store_true", help="Show Kalman predictions and misses"
     )
     args = parser.parse_args(argv)
+    if args.events and not args.track:
+        parser.error("--events requires --track")
     if args.assignment is not None and not args.track:
         parser.error("--assignment requires --track")
     if args.tracker == "kalman" and not args.track:
@@ -63,11 +68,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                     diagnostics = motion_tracker.diagnostics
             else:
                 tracker = IoUPersonTracker(config.tracking)
-        preview(config, detector, tracker, track_diagnostics=diagnostics)
+        preview(
+            config,
+            detector,
+            tracker,
+            track_diagnostics=diagnostics,
+            events=PersonEventGenerator(config.events) if args.events else None,
+            event_sink=log_event if args.events else None,
+        )
     except KeyboardInterrupt:
         print("\nCamera preview stopped.")
         return 0
-    except (CameraError, DetectorError, TrackerError, cv2.error) as exc:
+    except (CameraError, DetectorError, TrackerError, EventError, cv2.error) as exc:
         print(f"Camera preview error: {exc}", file=sys.stderr)
         return 1
     return 0
