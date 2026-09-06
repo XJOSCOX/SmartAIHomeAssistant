@@ -30,7 +30,8 @@ class PersonTracker(Protocol):
 
     Output is the complete active track set, including missed tracks with their
     missed_frames count. confirmed marks eligibility for semantic entry; current
-    Jake trackers confirm on the first detection. IDs must never be reused.
+    baseline trackers confirm on the first detection; stabilized trackers require hits.
+    IDs must never be reused.
     ID assignment, occlusion handling,
     and expiry policies belong to the implementation. Instances are not shared
     across sessions. A future image-based tracker will need a separate contract.

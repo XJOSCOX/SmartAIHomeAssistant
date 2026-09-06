@@ -2,7 +2,7 @@
 
 Jake is the foundation for a privacy-first, local-first smart home AI system.
 The intended system will understand household events locally and eventually
-support natural conversation. **Phase 1F adds semantic ENTERED, PRESENT, and LEFT events over tracked people.
+support natural conversation. **Phase 1G stabilizes Kalman tracking and filters noisy household events.
 All tracker modes remain available; track IDs are session-local, not resident identities.**
 
 ## Phase 1 scope
@@ -433,8 +433,8 @@ preview remains available with q/Q and Ctrl+C cleanup. Console output is opt-in:
 [18:00:18.421] LEFT track=1 duration=18.3s
 ```
 
-ENTERED is emitted once on first confirmed visibility (current trackers confirm
-on the first detection). PRESENT is throttled per track, defaults to five seconds,
+ENTERED is emitted once on first confirmed visibility (baseline trackers confirm
+on the first detection; Phase 1G Kalman requires confirmation hits). PRESENT is throttled per track, defaults to five seconds,
 and pauses while a track is missed. No catch-up burst occurs after a gap. LEFT is
 emitted once when the tracker removes the ID after its missed-frame allowance.
 Short occlusions preserve event state and do not generate another ENTERED.
@@ -449,6 +449,36 @@ Events contain metadata only and remain in memory; console logging does not
 persist video, images, or event files. No network or later-phase functionality is
 added. See [event state machine and timing design](docs/person-events.md) for the
 public lifecycle extension, local UUIDs, timing rules, and limitations.
+
+## Phase 1G: track stabilization
+
+Live event testing exposed fragmentation. The normal `--tracker kalman` path now
+uses three-hit confirmation, 1.5-second retention, and combined IoU/center-distance
+matching. Tentative tracks emit no household events. Confirmed tracks become LOST
+on misses; LEFT occurs only after timeout. Duration begins at confirmation.
+
+```powershell
+uv run --extra detection jake-camera --config config/local.toml --track --tracker kalman --assignment hungarian --events --debug-tracks
+```
+
+Debug labels show TENTATIVE hit counts, CONFIRMED, and LOST elapsed seconds.
+Omit `--debug-tracks` for normal preview. Add the new settings from
+`config/jake.example.toml` to your existing `[tracking]` table; old files use defaults.
+`max_missed_frames` now applies only to `iou` and `kalman-baseline`.
+Use `--tracker kalman-baseline` to reproduce the earlier Kalman behavior described
+in Phase 1D–1F above; the Python `KalmanPersonTracker` also retains that baseline.
+`StabilizedKalmanPersonTracker` is the new production adapter.
+
+```sh
+uv run --extra tracking python -m jake.stabilization_benchmark
+```
+
+On the deterministic dropout/occlusion/motion/jitter/crossing fixture, baseline vs
+stabilized results are: 13 to 9 IDs, 13 to 2 confirmed IDs, 5 to 4 switches, 13 to 2
+ENTERED, 13 to 2 LEFT, and 7 to 0 false short pairs. Four crossing switches remain;
+track IDs are not physical identities. These synthetic results await live validation.
+See [stabilization design and migration](docs/track-stabilization.md) for lifecycle,
+cost/gating, defaults, timing, metric definitions, and limitations.
 
 ## Repository layout
 
@@ -467,6 +497,8 @@ src/jake/
   kalman.py       Reusable NumPy linear Kalman mathematics
   motion.py       Constant-velocity box model and dt policy
   benchmarks.py   Deterministic synthetic tracker comparison
+  stabilization_benchmark.py  Synthetic tracking and event-quality comparison
+  motion_matching.py  Stabilized spatial cost and gating
   matching.py     IoU geometry, strategy selection, and gated global matching
   hungarian.py    Jake-owned rectangular linear assignment solver
   diagnostics.py  Framework-independent detector timing
@@ -541,7 +573,7 @@ detection extra and configured local model weights):
 from pathlib import Path
 
 from jake.adapters.opencv_camera import OpenCVCamera
-from jake.adapters.kalman_tracker import KalmanPersonTracker
+from jake.adapters.kalman_tracker import StabilizedKalmanPersonTracker
 from jake.adapters.person_events import PersonEventGenerator
 from jake.adapters.yolo_detector import YoloPersonDetector
 from jake.config import load_app_config
@@ -550,7 +582,7 @@ from jake.pipeline import PerceptionPipeline
 
 config = load_app_config(Path("config/local.toml"))
 detector = YoloPersonDetector(config.detector, config.pipeline.min_person_confidence)
-tracker = KalmanPersonTracker(config.tracking)
+tracker = StabilizedKalmanPersonTracker(config.tracking)
 event_generator = PersonEventGenerator(config.events)
 pipeline = PerceptionPipeline(config.pipeline, detector, tracker, event_generator)
 with OpenCVCamera(config.pipeline.camera_id, config.camera) as source:
@@ -585,7 +617,7 @@ are ignored by Git; ignore rules are not an access-control mechanism.
 ## Roadmap
 
 The Phase 1 foundation, 1A acquisition, 1B detection, 1C IoU tracking, 1D
-Kalman-assisted tracking, 1E global assignment, and 1F semantic events are implemented.
+Kalman-assisted tracking, 1E global assignment, 1F semantic events, and 1G stabilization are implemented.
 Phase 1A was physically validated on Windows at approximately 19 FPS, 640×480,
 with advancing sequences and successful shutdown. Phase 1B was also physically
 validated with multiple people and CPU inference fast enough for development.
@@ -596,7 +628,7 @@ awaits physical validation. The sequence below is a planning outline.
 
 | Phase | Planned capabilities |
 | --- | --- |
-| 1 — perception | Foundation through 1F semantic person events implemented |
+| 1 — perception | Foundation through 1G track stabilization implemented |
 | 2 — recognition | Resident recognition, frequent visitor recognition, delivery/visitor classification, with consent and identity-data controls |
 | 3 — understanding and memory | Activity recognition, event memory, household behavioral learning, anomaly detection, and governed continual learning |
 | 4 — voice and interaction | Speech recognition, text-to-speech, basic conversational AI, context-aware resident greetings, and daily/event summaries |

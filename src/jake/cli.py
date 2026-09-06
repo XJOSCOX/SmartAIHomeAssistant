@@ -19,7 +19,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--track", action="store_true", help="Enable Jake tracking (implies --detect)"
     )
-    parser.add_argument("--tracker", choices=("iou", "kalman"), default="iou")
+    parser.add_argument("--tracker", choices=("iou", "kalman", "kalman-baseline"), default="iou")
     parser.add_argument("--assignment", choices=("greedy", "hungarian"), default=None)
     parser.add_argument("--events", action="store_true", help="Log semantic person events locally")
     parser.add_argument(
@@ -30,9 +30,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--events requires --track")
     if args.assignment is not None and not args.track:
         parser.error("--assignment requires --track")
-    if args.tracker == "kalman" and not args.track:
+    if args.tracker in {"kalman", "kalman-baseline"} and not args.track:
         parser.error("--tracker kalman requires --track")
-    if args.debug_tracks and not (args.track and args.tracker == "kalman"):
+    if args.debug_tracks and not (args.track and args.tracker in {"kalman", "kalman-baseline"}):
         parser.error("--debug-tracks requires --track --tracker kalman")
     try:
         config = load_app_config(args.config)
@@ -45,7 +45,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         import cv2
 
         from jake.adapters.iou_tracker import IoUPersonTracker, TrackerError
-        from jake.adapters.kalman_tracker import KalmanPersonTracker
+        from jake.adapters.kalman_tracker import KalmanPersonTracker, StabilizedKalmanPersonTracker
         from jake.adapters.opencv_camera import CameraError
         from jake.adapters.yolo_detector import DetectorError, YoloPersonDetector
         from jake.preview import preview
@@ -61,8 +61,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         tracker: PersonTracker | None = None
         diagnostics = None
         if args.track:
-            if args.tracker == "kalman":
-                motion_tracker = KalmanPersonTracker(config.tracking)
+            if args.tracker in {"kalman", "kalman-baseline"}:
+                motion_tracker = (
+                    StabilizedKalmanPersonTracker(config.tracking)
+                    if args.tracker == "kalman"
+                    else KalmanPersonTracker(config.tracking)
+                )
                 tracker = motion_tracker
                 if args.debug_tracks:
                     diagnostics = motion_tracker.diagnostics

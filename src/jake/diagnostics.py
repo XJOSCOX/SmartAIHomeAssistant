@@ -13,6 +13,10 @@ class TrackDiagnostic:
     missed_frames: int
     predicted_box: BoundingBox
     measured_box: BoundingBox | None
+    lifecycle: str | None = None
+    visible_hits: int = 1
+    confirmation_hits: int = 1
+    missed_seconds: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)

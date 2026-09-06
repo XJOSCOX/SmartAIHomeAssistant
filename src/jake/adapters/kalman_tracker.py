@@ -1,7 +1,8 @@
 """Jake-owned motion prediction and correction around a selectable matcher."""
 
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import UTC, datetime
+from enum import StrEnum
 from time import perf_counter
 
 import numpy as np
@@ -22,6 +23,14 @@ from jake.motion import (
     process_noise,
     transition_matrix,
 )
+from jake.motion_matching import assign_motion_boxes
+
+
+class TrackState(StrEnum):
+    TENTATIVE = "TENTATIVE"
+    CONFIRMED = "CONFIRMED"
+    LOST = "LOST"
+    EXPIRED = "EXPIRED"
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,17 +46,20 @@ class _MotionTrack:
     age_frames: int = 1
     visible_frames: int = 1
     missed_frames: int = 0
+    lifecycle: TrackState = TrackState.CONFIRMED
 
 
 class KalmanPersonTracker:
     """Session-local PersonTracker: predict → assignment → correct → lifecycle.
 
     Functional filter updates allow failed updates to leave all session state
-    unchanged. Misses count processed updates as in Phase 1C, not elapsed time.
+    unchanged. The baseline counts missed updates; stabilized mode uses elapsed
+    capture time and confirmation hits. EXPIRED states are removed before matching.
     """
 
-    def __init__(self, config: TrackingConfig) -> None:
+    def __init__(self, config: TrackingConfig, *, stabilized: bool = False) -> None:
         self._config = config
+        self._stabilized = stabilized
         self._tracks: tuple[_MotionTrack, ...] = ()
         self._last_context: FrameContext | None = None
         self._next_id = 1
@@ -60,7 +72,20 @@ class KalmanPersonTracker:
 
     def diagnostics(self) -> tuple[TrackDiagnostic, ...]:
         return tuple(
-            TrackDiagnostic(t.track_id, t.missed_frames, t.predicted_box, t.measured_box)
+            TrackDiagnostic(
+                t.track_id,
+                t.missed_frames,
+                t.predicted_box,
+                t.measured_box,
+                lifecycle=t.lifecycle.value if self._stabilized else None,
+                visible_hits=t.visible_frames,
+                confirmation_hits=self._config.confirmation_hits,
+                missed_seconds=(
+                    self._last_context.captured_at.astimezone(UTC) - t.last_seen_at.astimezone(UTC)
+                ).total_seconds()
+                if self._last_context
+                else 0.0,
+            )
             for t in self._tracks
         )
 
@@ -72,6 +97,10 @@ class KalmanPersonTracker:
                 raise TrackerError("tracker cannot mix camera sessions")
             if context.sequence <= self._last_context.sequence:
                 raise TrackerError("tracker frame sequences must be strictly increasing")
+            if self._stabilized and context.captured_at.astimezone(
+                UTC
+            ) < self._last_context.captured_at.astimezone(UTC):
+                raise TrackerError("stabilized capture timestamps must not move backwards")
         try:
             tracks, next_id, assignment_ms = self._advance(context, detections)
         except (KalmanError, AssignmentError, np.linalg.LinAlgError) as exc:
@@ -80,7 +109,16 @@ class KalmanPersonTracker:
             ) from exc
         self._tracks, self._next_id, self._last_context = tracks, next_id, context
         self._last_assignment_ms = assignment_ms
-        return tuple(PersonTrack(t.track_id, t.box, t.confidence, t.missed_frames) for t in tracks)
+        return tuple(
+            PersonTrack(
+                t.track_id,
+                t.box,
+                t.confidence,
+                t.missed_frames,
+                t.lifecycle != TrackState.TENTATIVE,
+            )
+            for t in tracks
+        )
 
     def _advance(
         self, context: FrameContext, detections: tuple[PersonDetection, ...]
@@ -90,6 +128,16 @@ class KalmanPersonTracker:
         transition, process = transition_matrix(dt), process_noise(noise, dt)
         predicted = []
         for track in self._tracks:
+            if (
+                self._stabilized
+                and (
+                    context.captured_at.astimezone(UTC) - track.last_seen_at.astimezone(UTC)
+                ).total_seconds()
+                > self._config.max_missed_seconds
+            ):
+                # Expire before association: late detections cannot resurrect an old ID.
+                track = replace(track, lifecycle=TrackState.EXPIRED)
+                continue
             motion = track.motion.predict(transition, process)
             box = bounded_box(motion.state)
             predicted.append(
@@ -103,12 +151,13 @@ class KalmanPersonTracker:
                 )
             )
         assignment_start = perf_counter()
+        track_boxes = tuple(t.predicted_box for t in predicted)
+        detection_boxes = tuple(d.box for d in detections)
         matches = dict(
-            assign_boxes(
-                tuple(t.predicted_box for t in predicted),
-                tuple(d.box for d in detections),
-                self._config.min_iou,
-                self._config.assignment,
+            assign_motion_boxes(track_boxes, detection_boxes, self._config)
+            if self._stabilized
+            else assign_boxes(
+                track_boxes, detection_boxes, self._config.min_iou, self._config.assignment
             )
         )
         assignment_ms = (perf_counter() - assignment_start) * 1000
@@ -131,10 +180,24 @@ class KalmanPersonTracker:
                         last_seen_at=context.captured_at,
                         visible_frames=track.visible_frames + 1,
                         missed_frames=0,
+                        lifecycle=(
+                            TrackState.CONFIRMED
+                            if not self._stabilized
+                            or track.visible_frames + 1 >= self._config.confirmation_hits
+                            else TrackState.TENTATIVE
+                        ),
                     )
                 )
-            elif track.missed_frames < self._config.max_missed_frames:
-                updated.append(replace(track, missed_frames=track.missed_frames + 1))
+            elif self._stabilized or track.missed_frames < self._config.max_missed_frames:
+                updated.append(
+                    replace(
+                        track,
+                        missed_frames=track.missed_frames + 1,
+                        lifecycle=TrackState.LOST
+                        if track.lifecycle != TrackState.TENTATIVE
+                        else TrackState.TENTATIVE,
+                    )
+                )
         used = set(matches.values())
         next_id = self._next_id
         for index, detection in enumerate(detections):
@@ -149,7 +212,17 @@ class KalmanPersonTracker:
                         context.captured_at,
                         context.captured_at,
                         detection.box,
+                        lifecycle=TrackState.TENTATIVE
+                        if self._stabilized and self._config.confirmation_hits > 1
+                        else TrackState.CONFIRMED,
                     )
                 )
                 next_id += 1
         return tuple(updated), next_id, assignment_ms
+
+
+class StabilizedKalmanPersonTracker(KalmanPersonTracker):
+    """Time-retained, confirmation-gated Kalman tracking with motion association."""
+
+    def __init__(self, config: TrackingConfig) -> None:
+        super().__init__(config, stabilized=True)

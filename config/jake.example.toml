@@ -17,7 +17,13 @@ image_size = 640
 [tracking]
 assignment = "hungarian"
 min_iou = 0.3
+# Legacy IoU / kalman-baseline only; stabilized Kalman ignores this value.
 max_missed_frames = 10
+confirmation_hits = 3
+max_missed_seconds = 1.5
+max_center_distance = 0.15
+iou_weight = 0.6
+distance_weight = 0.4
 
 [tracking.kalman]
 process_noise_position = 0.0001

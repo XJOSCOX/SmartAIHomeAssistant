@@ -228,7 +228,7 @@ def test_kalman_cli_and_debug_diagnostics(
     assert main(args) == 0
     labels = [call.args[1] for call in desktop["putText"].call_args_list]
     assert labels.count("ID 1 | PERSON 90.0%") == 2
-    assert ("ID 1 | missed 1" in labels) is debug
+    assert ("ID 1 | TENTATIVE 1/3" in labels) is debug
     assert any(call.args[3] == (0, 165, 255) for call in rectangles.call_args_list) is debug
     desktop["capture"].release.assert_called_once_with()
 
@@ -289,7 +289,15 @@ def test_cli_events_opt_in_and_expiration(
     path.write_text(
         '[pipeline]\ncamera_id = "test"\n[tracking]\nmax_missed_frames = 1', encoding="utf-8"
     )
-    args = ["--config", str(path), "--track", "--tracker", "kalman", "--assignment", "hungarian"]
+    args = [
+        "--config",
+        str(path),
+        "--track",
+        "--tracker",
+        "kalman-baseline",
+        "--assignment",
+        "hungarian",
+    ]
     if enabled:
         args.append("--events")
     assert main(args) == 0
@@ -332,3 +340,19 @@ def test_event_failure_cleans_up_and_cli_reports(
     assert "bad event timeline" in capsys.readouterr().err
     desktop["capture"].release.assert_called_once_with()
     desktop["destroyWindow"].assert_called_once()
+
+
+def test_stabilized_debug_confirmed_and_lost_labels(desktop: dict[str, Mock]) -> None:
+    from jake.diagnostics import TrackDiagnostic
+    from jake.preview import draw_track_diagnostics
+
+    box = BoundingBox(0.1, 0.2, 0.3, 0.6)
+    draw_track_diagnostics(
+        np.zeros((40, 80, 3), dtype=np.uint8),
+        (
+            TrackDiagnostic("7", 0, box, box, lifecycle="CONFIRMED"),
+            TrackDiagnostic("8", 7, box, None, lifecycle="LOST", missed_seconds=0.7),
+        ),
+    )
+    labels = [call.args[1] for call in desktop["putText"].call_args_list]
+    assert labels == ["ID 7 | CONFIRMED", "ID 8 | LOST 0.7s"]

@@ -146,9 +146,16 @@ def draw_track_diagnostics(
                     color,
                     1,
                 )
+        label = f"ID {item.track_id} | missed {item.missed_frames}"
+        if item.lifecycle is not None:
+            label = f"ID {item.track_id} | {item.lifecycle}"
+            if item.lifecycle == "TENTATIVE":
+                label += f" {item.visible_hits}/{item.confirmation_hits}"
+            elif item.lifecycle == "LOST":
+                label += f" {item.missed_seconds:.1f}s"
         cv2.putText(
             display,
-            f"ID {item.track_id} | missed {item.missed_frames}",
+            label,
             (10, 125 + index * 20),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.5,

@@ -86,10 +86,32 @@ class TrackingConfig:
     max_missed_frames: int = 10
     kalman: KalmanConfig = KalmanConfig()
     assignment: str = "greedy"
+    confirmation_hits: int = 3
+    max_missed_seconds: float = 1.5
+    max_center_distance: float = 0.15
+    iou_weight: float = 0.6
+    distance_weight: float = 0.4
 
     def __post_init__(self) -> None:
         if not isinstance(self.assignment, str) or self.assignment not in {"greedy", "hungarian"}:
             raise ValueError('tracking.assignment must be "greedy" or "hungarian"')
+        if (
+            isinstance(self.confirmation_hits, bool)
+            or not isinstance(self.confirmation_hits, int)
+            or self.confirmation_hits < 1
+        ):
+            raise ValueError("tracking.confirmation_hits must be a positive integer")
+        for name in ("max_missed_seconds", "max_center_distance", "iou_weight", "distance_weight"):
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not isfinite(value)
+                or value <= 0
+            ):
+                raise ValueError(f"tracking.{name} must be finite and positive")
+        if self.max_center_distance > 1 or self.iou_weight > 1 or self.distance_weight > 1:
+            raise ValueError("tracking distance gate and weights must be at most 1")
         threshold = self.min_iou
         if (
             isinstance(threshold, bool)
@@ -169,9 +191,14 @@ def load_app_config(path: Path) -> AppConfig:
         "max_missed_frames",
         "kalman",
         "assignment",
+        "confirmation_hits",
+        "max_missed_seconds",
+        "max_center_distance",
+        "iou_weight",
+        "distance_weight",
     }:
         raise ValueError(
-            "[tracking] permits only min_iou, max_missed_frames, assignment, and [tracking.kalman]"
+            "unknown tracking setting; see config/jake.example.toml for the tracking schema"
         )
     kalman = tracking.get("kalman", {})
     noise_defaults = KalmanConfig()
@@ -200,6 +227,16 @@ def load_app_config(path: Path) -> AppConfig:
             ),
             kalman=noise_config,
             assignment=tracking.get("assignment", tracking_defaults.assignment),
+            **{
+                name: tracking.get(name, getattr(tracking_defaults, name))
+                for name in (
+                    "confirmation_hits",
+                    "max_missed_seconds",
+                    "max_center_distance",
+                    "iou_weight",
+                    "distance_weight",
+                )
+            },
         ),
         EventConfig(present_interval_seconds=events.get("present_interval_seconds", 5.0)),
     )

@@ -5,6 +5,11 @@ associate detections over time using session-local IDs. Events describe changes
 in those tracks so downstream Jake components can consume metadata instead of video.
 No identity, persistence, speech, or behavioral inference is implemented.
 
+Phase 1G adds confirmation-gated, time-retained Kalman tracking; see
+[stabilization and migration](track-stabilization.md). References to immediate
+confirmation below describe the preserved baseline trackers. The event generator
+itself continues to observe the same public lifecycle contract.
+
 ## Boundary and state machine
 
 `adapters/person_events.py:PersonEventGenerator` implements `EventGenerator` using
