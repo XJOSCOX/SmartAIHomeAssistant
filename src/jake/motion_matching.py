@@ -38,7 +38,16 @@ def assign_motion_boxes(
         for j, detection in enumerate(detections)
         if (cost := motion_cost(track, detection, config)) is not None
     }
-    if config.assignment == "greedy":
+    return assign_candidates(len(tracks), len(detections), candidates, config.assignment)
+
+
+def assign_candidates(
+    track_count: int, detection_count: int, candidates: dict[tuple[int, int], float], strategy: str
+) -> tuple[tuple[int, int], ...]:
+    """Assign pre-gated costs in [0,1]; maximize cardinality, then minimize cost."""
+    if not track_count or not detection_count:
+        return ()
+    if strategy == "greedy":
         matches = []
         used_tracks: set[int] = set()
         used_detections: set[int] = set()
@@ -49,14 +58,14 @@ def assign_motion_boxes(
                 used_detections.add(j)
         return tuple(matches)
     # Same cardinality-first objective as the baseline, with explicit unmatched nodes.
-    size = len(tracks) + len(detections)
-    penalty = float(min(len(tracks), len(detections)) + 1)
+    size = track_count + detection_count
+    penalty = float(min(track_count, detection_count) + 1)
     forbidden = (size + 1) * 2 * penalty
     costs = [[0.0] * size for _ in range(size)]
     for i in range(size):
         for j in range(size):
-            if i < len(tracks) and j < len(detections):
+            if i < track_count and j < detection_count:
                 costs[i][j] = candidates.get((i, j), forbidden)
-            elif i < len(tracks) or j < len(detections):
+            elif i < track_count or j < detection_count:
                 costs[i][j] = penalty
     return tuple(pair for pair in linear_assignment(costs) if pair in candidates)

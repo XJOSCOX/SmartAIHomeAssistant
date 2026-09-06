@@ -2,9 +2,10 @@
 
 from collections.abc import Iterator
 
+from jake.appearance import encode_detections
 from jake.config import PipelineConfig
 from jake.domain import Frame, FrameContext, PersonEvent
-from jake.ports import EventGenerator, FrameSource, PersonDetector, PersonTracker
+from jake.ports import AppearanceEncoder, EventGenerator, FrameSource, PersonDetector, PersonTracker
 
 
 class PerceptionPipeline:
@@ -21,11 +22,14 @@ class PerceptionPipeline:
         detector: PersonDetector,
         tracker: PersonTracker,
         events: EventGenerator,
+        *,
+        encoder: AppearanceEncoder | None = None,
     ) -> None:
         self._config = config
         self._detector = detector
         self._tracker = tracker
         self._events = events
+        self._encoder = encoder
         self._last_sequence: int | None = None
 
     def process(self, frame: Frame) -> tuple[PersonEvent, ...]:
@@ -41,6 +45,8 @@ class PerceptionPipeline:
             for detection in self._detector.detect(frame)
             if detection.confidence >= self._config.min_person_confidence
         )
+        if self._encoder is not None:
+            detections = encode_detections(frame, detections, self._encoder)
         tracks = self._tracker.update(context, detections)
         return self._events.generate(context, tracks)
 

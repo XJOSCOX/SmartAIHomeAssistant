@@ -35,3 +35,12 @@ initial_velocity_variance = 1.0
 [events]
 # Emitted only for visible confirmed tracks; no catch-up bursts after missed frames.
 present_interval_seconds = 5.0
+
+[tracking.appearance]
+# Opt in only after installing the appearance extra and local XML/BIN model pair.
+enabled = false
+model = "models/person-reidentification-retail-0287.xml"
+weight = 0.35
+min_similarity = 0.45
+ema_alpha = 0.8
+max_embedding_age_seconds = 5.0

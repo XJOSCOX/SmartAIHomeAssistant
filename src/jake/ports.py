@@ -6,7 +6,15 @@ No model framework or camera SDK belongs in these contracts.
 from collections.abc import Iterator
 from typing import Protocol
 
-from jake.domain import Frame, FrameContext, PersonDetection, PersonEvent, PersonTrack
+from jake.domain import (
+    AppearanceEmbedding,
+    BoundingBox,
+    Frame,
+    FrameContext,
+    PersonDetection,
+    PersonEvent,
+    PersonTrack,
+)
 
 
 class FrameSource(Protocol):
@@ -53,3 +61,13 @@ class EventGenerator(Protocol):
     def generate(
         self, context: FrameContext, tracks: tuple[PersonTrack, ...]
     ) -> tuple[PersonEvent, ...]: ...
+
+
+class AppearanceEncoder(Protocol):
+    """Encode only a person's crop into a unit vector of fixed dimension per encoder.
+
+    Inference is local. No crops or embeddings may be persisted by implementations.
+    Do not share vectors across model versions or camera sessions.
+    """
+
+    def encode(self, frame: Frame, box: BoundingBox) -> AppearanceEmbedding: ...

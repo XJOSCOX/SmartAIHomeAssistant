@@ -7,6 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from jake.adapters.person_events import EventError, PersonEventGenerator
+from jake.appearance import AppearanceError
 from jake.config import load_app_config
 from jake.event_console import log_event
 from jake.ports import PersonTracker
@@ -25,7 +26,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--debug-tracks", action="store_true", help="Show Kalman predictions and misses"
     )
+    parser.add_argument(
+        "--appearance",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable short-term local appearance encoding with --track --tracker kalman",
+    )
     args = parser.parse_args(argv)
+    if args.appearance is True and not (args.track and args.tracker == "kalman"):
+        parser.error("--appearance requires --track --tracker kalman")
     if args.events and not args.track:
         parser.error("--events requires --track")
     if args.assignment is not None and not args.track:
@@ -36,6 +45,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--debug-tracks requires --track --tracker kalman")
     try:
         config = load_app_config(args.config)
+        if args.appearance is not None:
+            config = replace(
+                config,
+                tracking=replace(
+                    config.tracking,
+                    appearance=replace(config.tracking.appearance, enabled=args.appearance),
+                ),
+            )
         if args.assignment is not None:
             config = replace(config, tracking=replace(config.tracking, assignment=args.assignment))
     except (OSError, ValueError) as exc:
@@ -58,6 +75,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.detect or args.track
             else None
         )
+        encoder = None
         tracker: PersonTracker | None = None
         diagnostics = None
         if args.track:
@@ -67,6 +85,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                     if args.tracker == "kalman"
                     else KalmanPersonTracker(config.tracking)
                 )
+                if args.tracker == "kalman" and config.tracking.appearance.enabled:
+                    from jake.adapters.kalman_tracker import AppearanceKalmanPersonTracker
+                    from jake.adapters.openvino_appearance import OpenVINOAppearanceEncoder
+
+                    encoder = OpenVINOAppearanceEncoder(config.tracking.appearance)
+                    motion_tracker = AppearanceKalmanPersonTracker(config.tracking)
                 tracker = motion_tracker
                 if args.debug_tracks:
                     diagnostics = motion_tracker.diagnostics
@@ -79,11 +103,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             track_diagnostics=diagnostics,
             events=PersonEventGenerator(config.events) if args.events else None,
             event_sink=log_event if args.events else None,
+            encoder=encoder,
         )
     except KeyboardInterrupt:
         print("\nCamera preview stopped.")
         return 0
-    except (CameraError, DetectorError, TrackerError, EventError, cv2.error) as exc:
+    except (
+        CameraError,
+        DetectorError,
+        TrackerError,
+        EventError,
+        AppearanceError,
+        cv2.error,
+    ) as exc:
         print(f"Camera preview error: {exc}", file=sys.stderr)
         return 1
     return 0

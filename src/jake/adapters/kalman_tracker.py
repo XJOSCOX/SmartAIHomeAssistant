@@ -1,6 +1,6 @@
 """Jake-owned motion prediction and correction around a selectable matcher."""
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from time import perf_counter
@@ -8,9 +8,11 @@ from time import perf_counter
 import numpy as np
 
 from jake.adapters.iou_tracker import TrackerError
+from jake.appearance import AppearanceError, cosine_similarity, update_embedding
+from jake.appearance_matching import assign_appearance_boxes
 from jake.config import TrackingConfig
 from jake.diagnostics import TrackDiagnostic
-from jake.domain import BoundingBox, FrameContext, PersonDetection, PersonTrack
+from jake.domain import AppearanceEmbedding, BoundingBox, FrameContext, PersonDetection, PersonTrack
 from jake.hungarian import AssignmentError
 from jake.kalman import KalmanError, KalmanFilter
 from jake.matching import assign_boxes
@@ -47,6 +49,9 @@ class _MotionTrack:
     visible_frames: int = 1
     missed_frames: int = 0
     lifecycle: TrackState = TrackState.CONFIRMED
+    appearance: AppearanceEmbedding | None = field(default=None, repr=False)
+    appearance_at: datetime | None = None
+    appearance_similarity: float | None = None
 
 
 class KalmanPersonTracker:
@@ -57,9 +62,13 @@ class KalmanPersonTracker:
     capture time and confirmation hits. EXPIRED states are removed before matching.
     """
 
-    def __init__(self, config: TrackingConfig, *, stabilized: bool = False) -> None:
+    def __init__(
+        self, config: TrackingConfig, *, stabilized: bool = False, appearance: bool = False
+    ) -> None:
         self._config = config
         self._stabilized = stabilized
+        self._use_appearance = appearance
+        self._embedding_dimension: int | None = None
         self._tracks: tuple[_MotionTrack, ...] = ()
         self._last_context: FrameContext | None = None
         self._next_id = 1
@@ -85,6 +94,7 @@ class KalmanPersonTracker:
                 ).total_seconds()
                 if self._last_context
                 else 0.0,
+                appearance_similarity=t.appearance_similarity,
             )
             for t in self._tracks
         )
@@ -101,14 +111,24 @@ class KalmanPersonTracker:
                 UTC
             ) < self._last_context.captured_at.astimezone(UTC):
                 raise TrackerError("stabilized capture timestamps must not move backwards")
+        dimension = self._embedding_dimension
+        if self._use_appearance:
+            for detection in detections:
+                if detection.appearance is None:
+                    raise TrackerError("appearance tracking requires encoded detections")
+                length = len(detection.appearance.values)
+                if dimension is not None and dimension != length:
+                    raise TrackerError("appearance embedding dimension changed within session")
+                dimension = length
         try:
             tracks, next_id, assignment_ms = self._advance(context, detections)
-        except (KalmanError, AssignmentError, np.linalg.LinAlgError) as exc:
+        except (KalmanError, AssignmentError, AppearanceError, np.linalg.LinAlgError) as exc:
             raise TrackerError(
                 "Kalman tracking update failed; session state was preserved"
             ) from exc
         self._tracks, self._next_id, self._last_context = tracks, next_id, context
         self._last_assignment_ms = assignment_ms
+        self._embedding_dimension = dimension
         return tuple(
             PersonTrack(
                 t.track_id,
@@ -138,6 +158,15 @@ class KalmanPersonTracker:
                 # Expire before association: late detections cannot resurrect an old ID.
                 track = replace(track, lifecycle=TrackState.EXPIRED)
                 continue
+            if (
+                self._use_appearance
+                and track.appearance_at is not None
+                and (
+                    context.captured_at.astimezone(UTC) - track.appearance_at.astimezone(UTC)
+                ).total_seconds()
+                > self._config.appearance.max_embedding_age_seconds
+            ):
+                track = replace(track, appearance=None, appearance_at=None)
             motion = track.motion.predict(transition, process)
             box = bounded_box(motion.state)
             predicted.append(
@@ -147,6 +176,7 @@ class KalmanPersonTracker:
                     box=box,
                     predicted_box=box,
                     measured_box=None,
+                    appearance_similarity=None,
                     age_frames=track.age_frames + 1,
                 )
             )
@@ -154,7 +184,15 @@ class KalmanPersonTracker:
         track_boxes = tuple(t.predicted_box for t in predicted)
         detection_boxes = tuple(d.box for d in detections)
         matches = dict(
-            assign_motion_boxes(track_boxes, detection_boxes, self._config)
+            assign_appearance_boxes(
+                track_boxes,
+                detection_boxes,
+                tuple(t.appearance for t in predicted),
+                tuple(d.appearance for d in detections),
+                self._config,
+            )
+            if self._use_appearance
+            else assign_motion_boxes(track_boxes, detection_boxes, self._config)
             if self._stabilized
             else assign_boxes(
                 track_boxes, detection_boxes, self._config.min_iou, self._config.assignment
@@ -170,9 +208,20 @@ class KalmanPersonTracker:
                     observation_matrix(),
                     np.eye(4) * noise.measurement_noise,
                 )
+                appearance = track.appearance
+                similarity = None
+                if self._use_appearance and detection.appearance is not None:
+                    if appearance is not None:
+                        similarity = cosine_similarity(appearance, detection.appearance)
+                    appearance = update_embedding(
+                        appearance, detection.appearance, self._config.appearance.ema_alpha
+                    )
                 updated.append(
                     replace(
                         track,
+                        appearance=appearance,
+                        appearance_at=context.captured_at if self._use_appearance else None,
+                        appearance_similarity=similarity,
                         motion=motion,
                         box=bounded_box(motion.state),
                         confidence=detection.confidence,
@@ -215,6 +264,8 @@ class KalmanPersonTracker:
                         lifecycle=TrackState.TENTATIVE
                         if self._stabilized and self._config.confirmation_hits > 1
                         else TrackState.CONFIRMED,
+                        appearance=detection.appearance if self._use_appearance else None,
+                        appearance_at=context.captured_at if self._use_appearance else None,
                     )
                 )
                 next_id += 1
@@ -226,3 +277,10 @@ class StabilizedKalmanPersonTracker(KalmanPersonTracker):
 
     def __init__(self, config: TrackingConfig) -> None:
         super().__init__(config, stabilized=True)
+
+
+class AppearanceKalmanPersonTracker(KalmanPersonTracker):
+    """Stabilized tracking with session-local, expiring appearance vectors."""
+
+    def __init__(self, config: TrackingConfig) -> None:
+        super().__init__(config, stabilized=True, appearance=True)

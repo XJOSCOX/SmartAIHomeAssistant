@@ -356,3 +356,65 @@ def test_stabilized_debug_confirmed_and_lost_labels(desktop: dict[str, Mock]) ->
     )
     labels = [call.args[1] for call in desktop["putText"].call_args_list]
     assert labels == ["ID 7 | CONFIRMED", "ID 8 | LOST 0.7s"]
+
+
+@pytest.mark.parametrize("flag", ["--appearance", "--no-appearance"])
+def test_appearance_cli_selection_and_debug(
+    desktop: dict[str, Mock],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    flag: str,
+) -> None:
+    from jake.appearance import normalize
+
+    factory, encoder_factory = Mock(), Mock()
+    factory.return_value.detect.return_value = (
+        PersonDetection(BoundingBox(0.1, 0.2, 0.3, 0.7), 0.9),
+    )
+    encoder_factory.return_value.encode.return_value = normalize((1.0, 0.0))
+    monkeypatch.setattr("jake.adapters.yolo_detector.YoloPersonDetector", factory)
+    monkeypatch.setattr(
+        "jake.adapters.openvino_appearance.OpenVINOAppearanceEncoder", encoder_factory
+    )
+    desktop["waitKey"].side_effect = [-1, -1, ord("Q")]
+    path = tmp_path / "config.toml"
+    path.write_text(
+        '[pipeline]\ncamera_id="test"\n[tracking.appearance]\nenabled=true', encoding="utf-8"
+    )
+    assert (
+        main(["--config", str(path), "--track", "--tracker", "kalman", "--debug-tracks", flag]) == 0
+    )
+    labels = [call.args[1] for call in desktop["putText"].call_args_list]
+    assert any("app 1.00" in label for label in labels) is (flag == "--appearance")
+    assert any("appearance " in label and "ms" in label for label in labels) is (
+        flag == "--appearance"
+    )
+    assert encoder_factory.call_count == int(flag == "--appearance")
+    desktop["capture"].release.assert_called_once()
+
+
+def test_appearance_error_cleanup_and_option_validation(
+    desktop: dict[str, Mock],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jake.appearance import AppearanceError
+
+    with pytest.raises(SystemExit):
+        main(["--appearance"])
+    with pytest.raises(ValueError, match="appearance preview"):
+        preview(AppConfig(PipelineConfig("test")), encoder=Mock())
+    detector, encoder_factory = Mock(), Mock()
+    detector.return_value.detect.return_value = (
+        PersonDetection(BoundingBox(0.1, 0.2, 0.3, 0.7), 0.9),
+    )
+    encoder_factory.return_value.encode.side_effect = AppearanceError("broken encoder")
+    monkeypatch.setattr("jake.adapters.yolo_detector.YoloPersonDetector", detector)
+    monkeypatch.setattr(
+        "jake.adapters.openvino_appearance.OpenVINOAppearanceEncoder", encoder_factory
+    )
+    path = tmp_path / "config.toml"
+    path.write_text('[pipeline]\ncamera_id="test"', encoding="utf-8")
+    assert main(["--config", str(path), "--track", "--tracker", "kalman", "--appearance"]) == 1
+    desktop["capture"].release.assert_called_once()
+    desktop["destroyWindow"].assert_called_once()

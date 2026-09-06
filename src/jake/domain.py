@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
-from math import isfinite
+from math import hypot, isclose, isfinite
 
 
 def _identifier(value: str, name: str) -> None:
@@ -67,9 +67,28 @@ class Frame:
 
 
 @dataclass(frozen=True, slots=True)
+class AppearanceEmbedding:
+    """Immutable unit vector, session-local metadata; never an identity or event payload."""
+
+    values: tuple[float, ...] = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.values, tuple) or not self.values:
+            raise ValueError("embedding must be a non-empty immutable tuple")
+        if any(
+            isinstance(v, bool) or not isinstance(v, (int, float)) or not isfinite(v)
+            for v in self.values
+        ):
+            raise ValueError("embedding values must be finite numbers")
+        if not isclose(hypot(*self.values), 1.0, rel_tol=1e-6, abs_tol=1e-6):
+            raise ValueError("embedding must be L2 normalized")
+
+
+@dataclass(frozen=True, slots=True)
 class PersonDetection:
     box: BoundingBox
     confidence: float
+    appearance: AppearanceEmbedding | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         _confidence(self.confidence)

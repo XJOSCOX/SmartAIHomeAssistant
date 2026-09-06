@@ -81,6 +81,43 @@ class KalmanConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class AppearanceConfig:
+    enabled: bool = False
+    model: str = "models/person-reidentification-retail-0287.xml"
+    weight: float = 0.35
+    min_similarity: float = 0.45
+    ema_alpha: float = 0.8
+    max_embedding_age_seconds: float = 5.0
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise ValueError("appearance.enabled must be a boolean")
+        if (
+            not isinstance(self.model, str)
+            or "://" in self.model
+            or Path(self.model).suffix.lower() != ".xml"
+        ):
+            raise ValueError("appearance.model must be a local OpenVINO .xml weight path")
+        for name in ("weight", "min_similarity", "ema_alpha", "max_embedding_age_seconds"):
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not isfinite(value)
+            ):
+                raise ValueError(f"appearance.{name} must be a finite number")
+        if (
+            not 0 < self.weight <= 1
+            or not 0 <= self.min_similarity <= 1
+            or not 0 <= self.ema_alpha < 1
+            or self.max_embedding_age_seconds <= 0
+        ):
+            raise ValueError(
+                "appearance weight in (0,1], similarity in [0,1], alpha in [0,1), age > 0 required"
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class TrackingConfig:
     min_iou: float = 0.3
     max_missed_frames: int = 10
@@ -91,6 +128,7 @@ class TrackingConfig:
     max_center_distance: float = 0.15
     iou_weight: float = 0.6
     distance_weight: float = 0.4
+    appearance: AppearanceConfig = AppearanceConfig()
 
     def __post_init__(self) -> None:
         if not isinstance(self.assignment, str) or self.assignment not in {"greedy", "hungarian"}:
@@ -190,6 +228,7 @@ def load_app_config(path: Path) -> AppConfig:
         "min_iou",
         "max_missed_frames",
         "kalman",
+        "appearance",
         "assignment",
         "confirmation_hits",
         "max_missed_seconds",
@@ -208,6 +247,11 @@ def load_app_config(path: Path) -> AppConfig:
     noise_config = KalmanConfig(
         **{name: kalman.get(name, getattr(noise_defaults, name)) for name in noise_fields}
     )
+    appearance = tracking.get("appearance", {})
+    appearance_fields = tuple(AppearanceConfig.__dataclass_fields__)
+    if not isinstance(appearance, dict) or set(appearance) - set(appearance_fields):
+        raise ValueError("unknown setting or invalid table in [tracking.appearance]")
+    appearance_config = AppearanceConfig(**appearance)
     tracking_defaults = TrackingConfig()
     events = data.get("events", {})
     if not isinstance(events, dict) or set(events) - {"present_interval_seconds"}:
@@ -226,6 +270,7 @@ def load_app_config(path: Path) -> AppConfig:
                 "max_missed_frames", tracking_defaults.max_missed_frames
             ),
             kalman=noise_config,
+            appearance=appearance_config,
             assignment=tracking.get("assignment", tracking_defaults.assignment),
             **{
                 name: tracking.get(name, getattr(tracking_defaults, name))

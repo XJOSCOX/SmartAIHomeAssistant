@@ -9,10 +9,11 @@ import numpy as np
 from numpy.typing import NDArray
 
 from jake.adapters.opencv_camera import OpenCVCamera
+from jake.appearance import encode_detections
 from jake.config import AppConfig
 from jake.diagnostics import TrackDiagnostic, measure_detection
 from jake.domain import FrameContext, PersonDetection, PersonEvent, PersonTrack
-from jake.ports import EventGenerator, PersonDetector, PersonTracker
+from jake.ports import AppearanceEncoder, EventGenerator, PersonDetector, PersonTracker
 
 WINDOW = "Jake local camera - q/Q to quit"
 
@@ -47,12 +48,15 @@ def preview(
     track_diagnostics: Callable[[], tuple[TrackDiagnostic, ...]] | None = None,
     events: EventGenerator | None = None,
     event_sink: Callable[[PersonEvent], None] | None = None,
+    encoder: AppearanceEncoder | None = None,
 ) -> None:
     """Display frames on the main thread, with no recording or persistence."""
     if tracker is not None and detector is None:
         raise ValueError("tracking preview requires a detector")
     if events is not None and (tracker is None or event_sink is None):
         raise ValueError("event preview requires a tracker and event sink")
+    if encoder is not None and tracker is None:
+        raise ValueError("appearance preview requires a tracker")
     with OpenCVCamera(config.pipeline.camera_id, config.camera) as camera:
         try:
             cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
@@ -66,10 +70,21 @@ def preview(
                 if measurement is not None:
                     if tracker is not None:
                         context = FrameContext(frame.camera_id, frame.sequence, frame.captured_at)
-                        tracks = tracker.update(
-                            context,
-                            measurement.detections,
-                        )
+                        detections = measurement.detections
+                        if encoder is not None:
+                            encoding_start = perf_counter()
+                            detections = encode_detections(frame, detections, encoder)
+                            encoding_ms = (perf_counter() - encoding_start) * 1000
+                            cv2.putText(
+                                display,
+                                f"appearance {encoding_ms:.1f} ms",
+                                (10, frame.height - 10),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                0.5,
+                                (0, 255, 0),
+                                1,
+                            )
+                        tracks = tracker.update(context, detections)
                         if events is not None and event_sink is not None:
                             for event in events.generate(context, tracks):
                                 event_sink(event)
@@ -153,6 +168,8 @@ def draw_track_diagnostics(
                 label += f" {item.visible_hits}/{item.confirmation_hits}"
             elif item.lifecycle == "LOST":
                 label += f" {item.missed_seconds:.1f}s"
+        if item.appearance_similarity is not None:
+            label += f" | app {item.appearance_similarity:.2f}"
         cv2.putText(
             display,
             label,

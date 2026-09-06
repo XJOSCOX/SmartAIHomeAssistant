@@ -2,7 +2,7 @@
 
 Jake is the foundation for a privacy-first, local-first smart home AI system.
 The intended system will understand household events locally and eventually
-support natural conversation. **Phase 1G stabilizes Kalman tracking and filters noisy household events.
+support natural conversation. **Phase 2A adds optional short-term appearance-assisted tracking.
 All tracker modes remain available; track IDs are session-local, not resident identities.**
 
 ## Phase 1 scope
@@ -480,6 +480,43 @@ track IDs are not physical identities. These synthetic results await live valida
 See [stabilization design and migration](docs/track-stabilization.md) for lifecycle,
 cost/gating, defaults, timing, metric definitions, and limitations.
 
+## Phase 2A: appearance-assisted continuity
+
+Appearance now supplements Kalman prediction and spatial matching within the
+current camera session. It does not recognize residents or faces. A separate
+`AppearanceEncoder` encodes person crops; the tracking core receives immutable
+vectors and stays independent of the model framework. Baselines remain available.
+
+The first adapter uses CPU OpenVINO with the pretrained
+`person-reidentification-retail-0287` body-appearance model: 256-dimensional,
+L2-normalized embeddings. Weights are installed explicitly as a local XML/BIN pair;
+there is no automatic download. Follow the exact
+[model setup and privacy instructions](docs/appearance-tracking.md) first, then run:
+
+```powershell
+uv run --extra detection --extra appearance jake-camera --config config/local.toml --track --tracker kalman --assignment hungarian --appearance --events --debug-tracks
+```
+
+Omit debug mode for normal preview; use `--no-appearance` for stabilized geometry.
+`[tracking.appearance] enabled = true` also enables it with `--tracker kalman`.
+The default remains disabled so existing configurations need no weights or runtime.
+The runtime import has a process-wide telemetry block; run Jake in a fresh process.
+Encoding time is displayed separately from detector inference. Embeddings remain
+in memory, expire by capture-time age, and are removed with tracks. They never
+enter semantic events. Appearance does not extend track retention beyond
+`max_missed_seconds` or resurrect expired IDs.
+
+```sh
+uv run --extra tracking python -m jake.appearance_benchmark
+```
+
+Across six synthetic scenarios, geometry versus appearance produced 12/9 IDs,
+9/2 switches, 9/2 fragmentation, and 54/18 wrong-association observations. Similar
+outfits remain ambiguous. This tests matching with synthetic descriptors, not
+real encoder accuracy; live pretrained-model validation remains pending. See the
+[appearance design](docs/appearance-tracking.md) for model contract, cosine/EMA,
+weights, gating, benchmark definitions, and limitations.
+
 ## Repository layout
 
 ```text
@@ -494,6 +531,7 @@ src/jake/
     iou_tracker.py   Jake-owned PersonTracker and internal lifecycle state
     kalman_tracker.py  Motion-aware PersonTracker using Jake's filter
     person_events.py   Metadata-only EventGenerator and presence state machine
+    openvino_appearance.py  Local CPU body-appearance encoder
   kalman.py       Reusable NumPy linear Kalman mathematics
   motion.py       Constant-velocity box model and dt policy
   benchmarks.py   Deterministic synthetic tracker comparison
@@ -502,6 +540,9 @@ src/jake/
   matching.py     IoU geometry, strategy selection, and gated global matching
   hungarian.py    Jake-owned rectangular linear assignment solver
   diagnostics.py  Framework-independent detector timing
+  appearance.py    Unit-vector math and encoder orchestration
+  appearance_matching.py  Spatial and appearance cost policy
+  appearance_benchmark.py  Synthetic continuity comparison
   event_console.py  Opt-in semantic event console formatting
   preview.py      Local OpenCV display and development overlay
   cli.py          jake-camera entry point
@@ -602,7 +643,8 @@ validate the entire file and reject unknown sections/settings.
 
 The current core performs no network access, telemetry, disk writes, or model
 downloads. Pixels stay in the detection stage and are omitted from frame repr;
-tracking and event generation receive metadata only. Events carry only an ID,
+tracking and event generation receive metadata only. Optional tracking appearance
+vectors stay out of public tracks and semantic events. Events carry only an ID,
 event kind, camera/frame/time context, session-local track ID, and entry timestamp. The core does
 not retain frames after processing; callers and adapters control their own memory.
 This is data minimization, not a guarantee of secure memory erasure.
@@ -629,7 +671,7 @@ awaits physical validation. The sequence below is a planning outline.
 | Phase | Planned capabilities |
 | --- | --- |
 | 1 — perception | Foundation through 1G track stabilization implemented |
-| 2 — recognition | Resident recognition, frequent visitor recognition, delivery/visitor classification, with consent and identity-data controls |
+| 2 — recognition | 2A short-term appearance continuity implemented; future resident recognition, frequent visitor recognition, delivery/visitor classification, with consent and identity-data controls |
 | 3 — understanding and memory | Activity recognition, event memory, household behavioral learning, anomaly detection, and governed continual learning |
 | 4 — voice and interaction | Speech recognition, text-to-speech, basic conversational AI, context-aware resident greetings, and daily/event summaries |
 | 5 — multiple hubs | Privacy-preserving context coordination and conversational handoff between household hubs |

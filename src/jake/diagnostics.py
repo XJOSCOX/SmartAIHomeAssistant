@@ -17,6 +17,7 @@ class TrackDiagnostic:
     visible_hits: int = 1
     confirmation_hits: int = 1
     missed_seconds: float = 0.0
+    appearance_similarity: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
