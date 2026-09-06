@@ -142,6 +142,21 @@ class SettingsPanel(QWidget):
         self.device.setRange(0, 99)
         self.device.setValue(config.camera.device)
         form.addRow("OpenCV camera index", self.device)
+        self.camera_width = QLineEdit(str(config.camera.width or ""))
+        self.camera_height = QLineEdit(str(config.camera.height or ""))
+        self.camera_fps = QLineEdit(str(config.camera.fps or ""))
+        self.camera_backend = QComboBox()
+        self.camera_backend.addItems(["auto", "dshow", "msmf", "v4l2", "gstreamer"])
+        self.camera_backend.setCurrentText(config.camera.backend)
+        self.camera_fourcc = QLineEdit(config.camera.fourcc or "")
+        for name, item in (
+            ("Requested width (blank = driver default)", self.camera_width),
+            ("Requested height", self.camera_height),
+            ("Requested FPS", self.camera_fps),
+            ("Camera backend", self.camera_backend),
+            ("Codec / FOURCC (optional)", self.camera_fourcc),
+        ):
+            form.addRow(name, item)
         self.cameras = QComboBox()
         self.cameras.addItem("Select a discovered camera…", -1)
         for index, camera in enumerate(
@@ -153,8 +168,8 @@ class SettingsPanel(QWidget):
         form.addRow(
             label(
                 "Camera ordering can differ between Qt and OpenCV. The explicit index "
-                "remains editable. Resolution and FPS are negotiated by the existing "
-                "camera adapter; this configuration has no requested-size/FPS fields.",
+                "remains editable. Requested modes are best effort; Live Camera shows actual "
+                "mode and measured delivery rate. Discovery does not enumerate supported modes.",
                 "muted",
             )
         )
@@ -246,7 +261,17 @@ class SettingsPanel(QWidget):
         return replace(
             c,
             home=HomeConfig(self.timezone.text().strip()),
-            camera=replace(c.camera, device=self.device.value()),
+            camera=replace(
+                c.camera,
+                device=self.device.value(),
+                width=int(self.camera_width.text()) if self.camera_width.text().strip() else None,
+                height=int(self.camera_height.text())
+                if self.camera_height.text().strip()
+                else None,
+                fps=float(self.camera_fps.text()) if self.camera_fps.text().strip() else None,
+                backend=self.camera_backend.currentText(),
+                fourcc=self.camera_fourcc.text().strip() or None,
+            ),
             detector=replace(c.detector, model=self.yolo.value()),
             tracking=replace(
                 c.tracking,

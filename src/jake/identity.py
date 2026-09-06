@@ -71,7 +71,7 @@ class Enrollment:
         if at.utcoffset() is None:
             raise IdentityError("enrollment timestamp must be aware")
         if not quality.accepted or embedding is None:
-            return quality.reason
+            return quality.summary
         if self.ready:
             return "complete"
         if (

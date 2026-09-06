@@ -1,7 +1,10 @@
 """Local OpenCV acquisition; install Jake's vision extra to use this adapter."""
 
 from collections.abc import Callable, Iterator
+from dataclasses import replace
 from datetime import UTC, datetime
+from math import isfinite
+from time import perf_counter
 from types import TracebackType
 from typing import Protocol, Self, cast
 
@@ -9,6 +12,7 @@ import cv2
 import numpy as np
 from numpy.typing import NDArray
 
+from jake.camera_info import CameraInfo
 from jake.config import CameraConfig
 from jake.domain import Frame
 
@@ -23,6 +27,9 @@ class Capture(Protocol):
     def isOpened(self) -> bool: ...
     def read(self) -> tuple[bool, NDArray[np.uint8] | None]: ...
     def release(self) -> None: ...
+    def set(self, prop: int, value: float) -> bool: ...
+    def get(self, prop: int) -> float: ...
+    def getBackendName(self) -> str: ...
 
 
 class OpenCVCamera:
@@ -38,7 +45,7 @@ class OpenCVCamera:
         camera_id: str,
         config: CameraConfig,
         *,
-        capture_factory: Callable[[int], Capture] | None = None,
+        capture_factory: Callable[..., Capture] | None = None,
     ) -> None:
         if not camera_id.strip():
             raise ValueError("camera_id must not be blank")
@@ -48,28 +55,97 @@ class OpenCVCamera:
         self._capture: Capture | None = None
         self._used = False
         self._sequence = 0
+        self._first_capture: float | None = None
+        self.info = CameraInfo(config.width, config.height, config.fps)
 
     def __enter__(self) -> Self:
         if self._used:
             raise CameraError("camera sessions are single-use; create a new adapter")
         self._used = True
         try:
+            backends = {
+                "auto": cv2.CAP_ANY,
+                "dshow": cv2.CAP_DSHOW,
+                "msmf": cv2.CAP_MSMF,
+                "v4l2": cv2.CAP_V4L2,
+                "gstreamer": cv2.CAP_GSTREAMER,
+            }
+            args = (
+                (self._config.device,)
+                if self._config.backend == "auto"
+                else (self._config.device, backends[self._config.backend])
+            )
             self._capture = (
-                self._factory(self._config.device)
+                self._factory(*args)
                 if self._factory is not None
-                else cast(Capture, cv2.VideoCapture(self._config.device))
+                else cast(Capture, cv2.VideoCapture(*args))
             )
             if not self._capture.isOpened():
                 raise CameraError(
                     f"Cannot open local camera index {self._config.device}; "
                     "check the index, camera permissions, and other applications using it"
                 )
+            self._negotiate()
         except BaseException as exc:
             self.close()
             if isinstance(exc, cv2.error):
                 raise CameraError(f"Cannot open local camera index {self._config.device}") from exc
             raise
         return self
+
+    def _negotiate(self) -> None:
+        assert self._capture is not None
+        config = self._config
+        warnings = []
+        # Codec first: compressed UVC modes can enable higher USB resolutions.
+        requests = (
+            (
+                "fourcc",
+                cv2.CAP_PROP_FOURCC,
+                cv2.VideoWriter.fourcc(*config.fourcc) if config.fourcc else None,
+            ),
+            ("width", cv2.CAP_PROP_FRAME_WIDTH, config.width),
+            ("height", cv2.CAP_PROP_FRAME_HEIGHT, config.height),
+            ("fps", cv2.CAP_PROP_FPS, config.fps),
+        )
+        for name, prop, value in requests:
+            if value is not None:
+                try:
+                    accepted = self._capture.set(prop, float(value))
+                except (cv2.error, NotImplementedError):
+                    accepted = False
+                if not accepted:
+                    warnings.append(f"{name} request unsupported")
+
+        def read(prop: int) -> float | None:
+            try:
+                value = self._capture.get(prop)  # type: ignore[union-attr]
+                if isinstance(value, (int, float)) and isfinite(value) and value > 0:
+                    return float(value)
+            except (cv2.error, NotImplementedError):
+                pass
+            return None
+
+        width, height = read(cv2.CAP_PROP_FRAME_WIDTH), read(cv2.CAP_PROP_FRAME_HEIGHT)
+        codec_value = read(cv2.CAP_PROP_FOURCC)
+        codec = None
+        if codec_value is not None:
+            decoded = "".join(chr((int(codec_value) >> (8 * i)) & 255) for i in range(4))
+            if decoded.isascii() and decoded.isprintable():
+                codec = decoded
+        try:
+            backend = self._capture.getBackendName()
+        except (cv2.error, NotImplementedError):
+            backend = self._config.backend
+        self.info = replace(
+            self.info,
+            actual_width=int(width) if width else None,
+            actual_height=int(height) if height else None,
+            actual_fps=read(cv2.CAP_PROP_FPS),
+            backend=backend if isinstance(backend, str) else self._config.backend,
+            codec=codec,
+            warnings=tuple(warnings),
+        )
 
     def __exit__(
         self,
@@ -102,6 +178,16 @@ class OpenCVCamera:
             height, width = bgr.shape[:2]
             frame = Frame(
                 self._camera_id, self._sequence, captured_at, width, height, rgb.tobytes(order="C")
+            )
+            completed = perf_counter()
+            if self._first_capture is None:
+                self._first_capture = completed
+            elapsed = completed - self._first_capture
+            self.info = replace(
+                self.info,
+                actual_width=width,
+                actual_height=height,
+                capture_fps=self._sequence / elapsed if elapsed > 0 else None,
             )
             self._sequence += 1
             return frame

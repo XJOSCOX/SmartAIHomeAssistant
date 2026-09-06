@@ -6,6 +6,12 @@ min_person_confidence = 0.5
 [camera]
 # Local camera index only; URLs and video files are not accepted.
 device = 0
+# Optional best-effort camera mode; omitted fields preserve driver defaults.
+# width = 1920
+# height = 1080
+# fps = 30
+# backend = "auto" # Windows: dshow/msmf; Linux: v4l2; optional gstreamer backend
+# fourcc = "MJPG" # Only request if supported by your camera/driver.
 
 [detector]
 # Download weights explicitly first; relative paths are relative to the working directory.

@@ -305,7 +305,9 @@ def test_enrollment_cli_mocked_camera(tmp_path: Path, monkeypatch: pytest.Monkey
 
     path = tmp_path / "local.toml"
     path.write_text(
-        '[pipeline]\ncamera_id="test"\n[identity]\nenrollment_samples=3', encoding="utf-8"
+        '[pipeline]\ncamera_id="test"\n[camera]\nwidth=1920\nheight=1080\nfps=30\n'
+        "[identity]\nenrollment_samples=3",
+        encoding="utf-8",
     )
     with pytest.raises(SystemExit):
         main(["--name", "Joseph", "--config", str(path)])
@@ -331,11 +333,15 @@ def test_enrollment_cli_mocked_camera(tmp_path: Path, monkeypatch: pytest.Monkey
         "jake.adapters.opencv_faces.face_quality",
         Mock(side_effect=[FaceQuality(True, "ok", pose) for pose in ("center", "left", "right")]),
     )
-    monkeypatch.setattr("jake.adapters.opencv_camera.OpenCVCamera", Mock(return_value=camera))
+    camera_factory = Mock(return_value=camera)
+    monkeypatch.setattr("jake.adapters.opencv_camera.OpenCVCamera", camera_factory)
     for method in ("namedWindow", "imshow", "putText", "destroyWindow"):
         monkeypatch.setattr(f"cv2.{method}", Mock())
     monkeypatch.setattr("cv2.waitKey", Mock(return_value=-1))
     assert main(["--name", "Joseph", "--consent", "--config", str(path)]) == 0
+    assert camera_factory.call_args.args[1].width == 1920
+    assert camera_factory.call_args.args[1].height == 1080
+    assert camera_factory.call_args.args[1].fps == 30
     assert store.add.call_args.args[0].sample_count == 3
     camera.__exit__.assert_called_once()
     assert main(["--list", "--config", str(path)]) == 0

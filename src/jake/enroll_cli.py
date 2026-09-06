@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from contextlib import suppress
 from pathlib import Path
 
+from jake.camera_info import CameraInfo
 from jake.config import load_app_config
 from jake.domain import BoundingBox
 from jake.identity import IdentityError
@@ -67,6 +68,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             with OpenCVCamera(config.pipeline.camera_id, config.camera) as camera:
                 cv2.namedWindow(window, cv2.WINDOW_NORMAL)
                 for frame in camera:
+                    info = getattr(camera, "info", None)
+                    if frame.sequence == 0 and isinstance(info, CameraInfo):
+                        print(info.summary)
                     update = session.process(frame)
                     display, _, _ = crop(frame, BoundingBox(0, 0, 1, 1))
                     text = update.progress

@@ -8,7 +8,7 @@ os.environ["QT_QPA_PLATFORM"] = "offscreen"
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import fields, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Event, get_ident
 from time import monotonic, sleep
@@ -81,6 +81,59 @@ def test_navigation_and_no_automatic_store_access(window: MainWindow, tmp_path: 
     assert not list(tmp_path.rglob("residents.json"))
     assert not list(tmp_path.rglob("visitors.json"))
     assert not window.controller.busy
+
+
+def test_camera_settings_roundtrip_and_mode_display(window: MainWindow) -> None:
+    from jake.camera_info import CameraInfo
+    from jake.config import CameraConfig
+
+    window.settings.camera_width.setText("3840")
+    window.settings.camera_height.setText("2160")
+    window.settings.camera_fps.setText("29.97")
+    window.settings.camera_backend.setCurrentText("msmf")
+    window.settings.camera_fourcc.setText("MJPG")
+    window.save_settings()
+    assert load_app_config(window.path).camera == CameraConfig(0, 3840, 2160, 29.97, "msmf", "MJPG")
+    info = CameraInfo(3840, 2160, 30, 1920, 1080, 30, capture_fps=18.5)
+    window.consume(Update(FRAME, camera_info=info, fps=21), ())
+    assert "REQUEST NOT HONORED" in window.live_stats.text()
+    assert "18.5 FPS" in window.live_stats.text()
+    assert "21.0 processing FPS" in window.live_stats.text()
+
+
+def test_worker_preserves_camera_info_and_config(app: QApplication, config: AppConfig) -> None:
+    from jake.adapters.opencv_camera import OpenCVCamera
+    from jake.camera_info import CameraInfo
+
+    info = CameraInfo(1920, 1080, 30, 1280, 720, 25)
+
+    class Frames:
+        def __init__(self) -> None:
+            self.info = info
+            self.frames = iter((FRAME,))
+
+        def __next__(self) -> Frame:
+            return next(self.frames)
+
+        def __iter__(self) -> Iterator[Frame]:
+            return self
+
+    @contextmanager
+    def source(received: AppConfig) -> Iterator[Iterator[Frame]]:
+        assert received is config
+        yield Frames()
+
+    worker = CameraWorker(config, lambda: Mock(process=Mock(return_value=Update(FRAME))), source)
+    worker.start()
+    until(app, lambda: not worker.isRunning())
+    update, _ = worker.mailbox.take()
+    assert update is not None and update.camera_info is info
+    assert update.frame is FRAME
+    from jake.desktop.controller import camera_source
+
+    camera = camera_source(config)
+    assert isinstance(camera, OpenCVCamera)
+    assert camera._config is config.camera  # Both live and enrollment use this source factory.
 
 
 @pytest.mark.parametrize("mode", ["Dark", "Light", "System"])
@@ -363,6 +416,7 @@ def test_live_service_uses_pipeline_metadata(
             return_value=({"1": IdentityMatch(IdentityState.RESIDENT, "r", "Name", 0.9)}, ())
         )
     )
+    identity.face_qualities = {}
     components = Components(detector, tracker, None, identity, None, None)
     monkeypatch.setattr("jake.application.sessions.validate_models", Mock())
     monkeypatch.setattr("jake.application.sessions.compose", Mock(return_value=components))
@@ -404,7 +458,11 @@ def test_enrollment_service_preserves_gates_and_commits_once(
         "jake.adapters.opencv_faces.face_quality",
         Mock(return_value=FaceQuality(False, "blurred face", "front")),
     )
-    assert "blurred face" in session.process(FRAME).progress
+    later = replace(FRAME, sequence=1, captured_at=FRAME.captured_at + timedelta(seconds=1))
+    assert "blurred face" in session.process(later).progress
+    calls = detector.detect.call_count
+    assert "blurred face" in session.process(replace(later, sequence=2)).progress
+    assert detector.detect.call_count == calls
     encoder.encode.assert_not_called()
     ready = Mock(ready=True, samples=[Mock()] * 10)
     monkeypatch.setattr(session, "enrollment", ready)

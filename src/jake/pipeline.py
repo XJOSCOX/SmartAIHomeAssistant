@@ -1,6 +1,7 @@
 """Synchronous, bounded orchestration with explicitly injected components."""
 
 from collections.abc import Iterator
+from time import perf_counter
 
 from jake.appearance import encode_detections
 from jake.config import PipelineConfig
@@ -47,6 +48,8 @@ class PerceptionPipeline:
         self.identity_events: tuple[IdentityEvent, ...] = ()
         self.tracks: tuple[PersonTrack, ...] = ()
         self.inference_ms = 0.0
+        self.appearance_ms = 0.0
+        self.face_ms = 0.0
         self.people_detected = 0
         self._last_sequence: int | None = None
 
@@ -65,14 +68,20 @@ class PerceptionPipeline:
             for detection in measured.detections
             if detection.confidence >= self._config.min_person_confidence
         )
+        self.appearance_ms = 0.0
+        self.face_ms = 0.0
         if self._encoder is not None:
+            started = perf_counter()
             detections = encode_detections(frame, detections, self._encoder)
+            self.appearance_ms = (perf_counter() - started) * 1000
         self.people_detected = len(detections)
         tracks = self._tracker.update(context, detections)
         self.tracks = tracks
         events = self._events.generate(context, tracks)
         if self._identity is not None:
+            started = perf_counter()
             self.identity_matches, self.identity_events = self._identity.process(frame, tracks)
+            self.face_ms = (perf_counter() - started) * 1000
             if self._visitors is not None:
                 self.visitor_matches, self.visitor_events = self._visitors.process(
                     context,

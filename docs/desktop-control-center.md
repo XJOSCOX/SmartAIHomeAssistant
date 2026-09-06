@@ -107,8 +107,9 @@ defaults false and works in CLI and GUI; visitor opt-in still enables resident-f
 processing. Existing `--identity` remains supported and requires tracking. Settings
 may save model paths before installation; runtime checks them before starting capture.
 
-Camera config currently supports only a numeric device index. Requested width/height/
-FPS controls are intentionally absent; actual values are displayed. Qt Multimedia
+Camera settings support optional width/height/FPS/backend/FOURCC requests. Live status
+reports requested and actual mode separately from delivered capture and processing FPS.
+See [Phase 2G](high-resolution-camera.md) for negotiation and native face details. Qt Multimedia
 discovers descriptions without opening captures. Qt/OpenCV ordering can differ, so
 the numeric index stays editable. Offscreen tests/smoke skip discovery entirely.
 
@@ -188,7 +189,7 @@ network DLL can be present for Multimedia; Jake exposes no network/cloud functio
 
 ## Implementation validation
 
-- 630 tests passed; 93% total coverage.
+- 669 tests passed; 93% total coverage (including Phase 2G camera/face infrastructure).
 - Ruff lint, format check, strict mypy, Python wheel and source distribution passed.
 - Windows PyInstaller windowed EXE build and offscreen startup/exit smoke passed.
 - Packaged YOLO and OpenVINO inference on synthetic pixels, YuNet detection and

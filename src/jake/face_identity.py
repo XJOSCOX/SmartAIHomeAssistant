@@ -50,11 +50,13 @@ class FaceIdentityService:
         self.visitor_blocked: set[str] = set()
         self.visitor_resident_evidence: dict[str, ResidentEvidence] = {}
         self.visitor_diagnostics: dict[str, str] = {}
+        self.face_qualities: dict[str, FaceQuality] = {}
 
     def process(
         self, frame: Frame, tracks: tuple[PersonTrack, ...]
     ) -> tuple[dict[str, IdentityMatch], tuple[IdentityEvent, ...]]:
         now = frame.captured_at.astimezone(UTC)
+        self.face_qualities.clear()
         self.visitor_observations.clear()
         self.visitor_blocked.clear()
         self.visitor_resident_evidence.clear()
@@ -87,12 +89,13 @@ class FaceIdentityService:
                 self.visitor_diagnostics[track_id] = "rejected overlapping person face crops"
                 continue  # A face seen in overlapping person crops cannot identify both tracks.
             quality = self.quality(frame, face, self.config)
+            self.face_qualities[track_id] = quality
             if not quality.accepted:
                 self.visitor_diagnostics[track_id] = (
                     f"rejected detector confidence {face.confidence:.2f} "
                     f"< {self.config.min_detector_confidence:.2f}"
                     if face.confidence < self.config.min_detector_confidence
-                    else f"rejected {quality.reason}"
+                    else f"rejected {quality.summary}"
                 )
             if quality.accepted:
                 embedding = self.encoder.encode(frame, face)

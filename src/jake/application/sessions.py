@@ -7,6 +7,7 @@ from time import perf_counter
 from jake.adapters.person_events import PersonEventGenerator
 from jake.application.composition import compose
 from jake.application.settings import validate_models
+from jake.camera_info import CameraInfo
 from jake.config import AppConfig
 from jake.domain import BoundingBox, Frame
 from jake.identity import Enrollment, IdentityError
@@ -44,6 +45,9 @@ class Update:
     diagnostics: tuple[str, ...] = ()
     progress: str = ""
     complete: bool = False
+    camera_info: CameraInfo | None = None
+    appearance_ms: float = 0
+    face_ms: float = 0
 
 
 class LiveSession:
@@ -63,14 +67,13 @@ class LiveSession:
             identity=c.identity,
             visitors=c.visitors,
         )
-        self.last = perf_counter()
 
     def process(self, frame: Frame) -> Update:
+        started = perf_counter()
         p = self.pipeline
         person_events = p.process(frame)
         now = perf_counter()
-        fps = 1 / max(now - self.last, 1e-9)
-        self.last = now
+        fps = 1 / max(now - started, 1e-9)
         overlays = []
         residents: set[str] = set()
         visitors: set[str] = set()
@@ -126,6 +129,10 @@ class LiveSession:
                 f"ID {d.track_id}: {d.lifecycle or 'active'}, missed={d.missed_frames}"
                 for d in self.components.diagnostics()
             )
+        if self.components.identity:
+            diagnostics.extend(
+                f"FACE {k}: {v.summary}" for k, v in self.components.identity.face_qualities.items()
+            )
         if self.components.visitors:
             diagnostics.extend(
                 f"VISITOR {k}: {v}" for k, v in self.components.visitors.diagnostics.items()
@@ -141,6 +148,8 @@ class LiveSession:
             len(visitors),
             tuple(sorted(visitors)),
             tuple(diagnostics),
+            appearance_ms=p.appearance_ms,
+            face_ms=p.face_ms,
         )
 
 
@@ -165,21 +174,35 @@ class EnrollmentSession:
         self.enrollment = Enrollment(config.identity)
         self.config, self.name = config, name
         self.saved = False
+        self._last_attempt: datetime | None = None
+        self._progress = "Waiting for face observation"
 
     def process(self, frame: Frame) -> Update:
         from jake.adapters.opencv_faces import face_quality
 
+        if self._last_attempt is not None and (
+            frame.captured_at - self._last_attempt
+        ).total_seconds() < max(0.5, self.config.identity.observation_interval_seconds):
+            return Update(frame, progress=self._progress, complete=self.enrollment.ready)
+        self._last_attempt = frame.captured_at
+        started = perf_counter()
         faces = self.detector.detect(frame, BoundingBox(0, 0, 1, 1))
         reason = "Exactly one consenting face required; look forward then turn slightly"
         if len(faces) == 1:
             quality = face_quality(frame, faces[0], self.config.identity)
             embedding = self.encoder.encode(frame, faces[0]) if quality.accepted else None
             reason = self.enrollment.accept(quality, embedding, frame.captured_at)
+            if quality.accepted:
+                reason += f" · {quality.summary}"
+        self._progress = (
+            f"{len(self.enrollment.samples)} / "
+            f"{self.config.identity.enrollment_samples} accepted · {reason}"
+        )
         return Update(
             frame,
-            progress=f"{len(self.enrollment.samples)} / "
-            f"{self.config.identity.enrollment_samples} accepted · {reason}",
+            progress=self._progress,
             complete=self.enrollment.ready,
+            face_ms=(perf_counter() - started) * 1000,
         )
 
     def commit(self) -> None:

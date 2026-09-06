@@ -3,13 +3,16 @@
 from collections import deque
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager
+from dataclasses import replace
 from threading import Event, Lock
+from time import perf_counter
 from typing import Protocol
 
 from PySide6.QtCore import QObject, QThread, Signal
 
 from jake.application.errors import ui_error
 from jake.application.sessions import EnrollmentSession, EventRow, LiveSession, Update
+from jake.camera_info import CameraInfo
 from jake.config import AppConfig
 from jake.domain import Frame
 
@@ -76,7 +79,14 @@ class CameraWorker(QThread):
                         break
                     if self.cancel.is_set():
                         break
+                    started = perf_counter()
                     update = session.process(frame)
+                    info = getattr(frames, "info", None)
+                    update = replace(
+                        update,
+                        fps=1 / max(perf_counter() - started, 1e-9),
+                        camera_info=info if isinstance(info, CameraInfo) else None,
+                    )
                     if self.cancel.is_set():
                         break
                     self.mailbox.publish(update)

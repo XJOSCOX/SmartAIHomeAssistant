@@ -800,3 +800,11 @@ awaits physical validation. The sequence below is a planning outline.
 Keep new model frameworks behind adapters and add dependencies only with a
 concrete integration. Later phases should introduce their own contracts when
 requirements are established, rather than expanding the perception core early.
+
+## Phase 2G: high-resolution camera input
+
+Optional camera width/height/FPS/backend/FOURCC requests now expose actual negotiated
+mode and measured delivery rate. Identity and visitor face evidence retain original
+source pixels while YOLO keeps its independent inference size. See the
+[high-resolution camera guide](docs/high-resolution-camera.md) for 1080p/4K configs,
+backend behavior, face-size diagnostics, performance limits and the post-review command.

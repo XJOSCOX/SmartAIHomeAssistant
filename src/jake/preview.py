@@ -10,6 +10,7 @@ from numpy.typing import NDArray
 
 from jake.adapters.opencv_camera import OpenCVCamera
 from jake.appearance import encode_detections
+from jake.camera_info import CameraInfo
 from jake.config import AppConfig
 from jake.diagnostics import TrackDiagnostic, measure_detection
 from jake.domain import FrameContext, PersonDetection, PersonEvent, PersonTrack
@@ -74,6 +75,10 @@ def preview(
             cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
             start = perf_counter()
             for count, frame in enumerate(camera, start=1):
+                processing_start = perf_counter()
+                info = getattr(camera, "info", None)
+                if count == 1 and isinstance(info, CameraInfo):
+                    print(info.summary)
                 measurement = measure_detection(detector, frame) if detector is not None else None
                 rgb = np.frombuffer(frame.pixels, dtype=np.uint8).reshape(
                     frame.height, frame.width, 3
@@ -99,7 +104,21 @@ def preview(
                         tracks = tracker.update(context, detections)
                         person_events = events.generate(context, tracks) if events else ()
                         if identity is not None:
+                            face_start = perf_counter()
                             identities, identity_events = identity.process(frame, tracks)
+                            face_ms = (perf_counter() - face_start) * 1000
+                            cv2.putText(
+                                display,
+                                f"face stage {face_ms:.1f} ms",
+                                (10, 150),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                0.5,
+                                (0, 255, 0),
+                                1,
+                            )
+                            if track_diagnostics is not None:
+                                for key, quality in identity.face_qualities.items():
+                                    print(f"FACE {key}: {quality.summary}")
                             visitor_matches: dict[str, VisitorMatch] = {}
                             if visitors is not None:
                                 visitor_matches, visitor_events = visitors.process(
@@ -159,7 +178,7 @@ def preview(
                             cv2.putText(
                                 display,
                                 f"assignment {config.tracking.assignment}",
-                                (10, 100),
+                                (10, 125),
                                 cv2.FONT_HERSHEY_SIMPLEX,
                                 0.5,
                                 (0, 165, 255),
@@ -184,6 +203,18 @@ def preview(
                         f"inference {measurement.inference_ms:.1f} ms | "
                         f"detection {measurement.detection_fps:.1f} FPS",
                         (10, 55),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5,
+                        (0, 255, 0),
+                        1,
+                    )
+                processing_fps = 1 / max(perf_counter() - processing_start, 1e-9)
+                if isinstance(info, CameraInfo) and info.capture_fps is not None:
+                    cv2.putText(
+                        display,
+                        f"capture delivered {info.capture_fps:.1f} FPS | "
+                        f"processing {processing_fps:.1f} FPS",
+                        (10, 100),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         0.5,
                         (0, 255, 0),
@@ -248,7 +279,7 @@ def draw_track_diagnostics(
         cv2.putText(
             display,
             label,
-            (10, 125 + index * 20),
+            (10, 175 + index * 20),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.5,
             (0, 165, 255),

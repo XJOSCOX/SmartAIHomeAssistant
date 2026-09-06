@@ -390,12 +390,16 @@ class MainWindow(QMainWindow):
             return
         if self.enrolling:
             self.enroll_camera.present(update)
-            self.enrollment_progress.setText(update.progress)
+            self.enrollment_progress.setText(
+                update.progress + ("\n" + update.camera_info.summary if update.camera_info else "")
+            )
             return
         self.camera.present(update)
         self.live_stats.setText(
             f"{update.fps:.1f} processing FPS · {update.frame.width} × {update.frame.height} "
-            f"· #{update.frame.sequence}"
+            f"· #{update.frame.sequence} · YOLO {update.inference_ms:.1f} ms "
+            f"· appearance {update.appearance_ms:.1f} ms · face {update.face_ms:.1f} ms"
+            + ("\n" + update.camera_info.summary if update.camera_info else "")
         )
         metrics = {
             "Processing FPS": f"{update.fps:.1f}",

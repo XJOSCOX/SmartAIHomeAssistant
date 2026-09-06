@@ -124,32 +124,36 @@ class SFaceEncoder:
 
 
 def face_quality(frame: Frame, face: FaceDetection, config: IdentityConfig) -> FaceQuality:
+    width = ceil(face.box.right * frame.width) - floor(face.box.left * frame.width)
+    height = ceil(face.box.bottom * frame.height) - floor(face.box.top * frame.height)
+
+    def result(accepted: bool, reason: str, pose: str = "center") -> FaceQuality:
+        return FaceQuality(accepted, reason, pose, width, height, config.min_face_pixels)
+
     if face.confidence < config.min_detector_confidence:
-        return FaceQuality(False, "low detector confidence")
+        return result(False, "low detector confidence")
     if (
         face.clipped
         or min(face.box.left, face.box.top, 1 - face.box.right, 1 - face.box.bottom) <= 0.005
     ):
-        return FaceQuality(False, "clipped face")
+        return result(False, "clipped face")
     bgr, _, _ = crop(frame, face.box)
     if min(bgr.shape[:2]) < config.min_face_pixels:
-        return FaceQuality(False, "face too small")
+        return result(False, "face too small")
     sharpness = float(cv2.Laplacian(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var())
     if sharpness < config.min_sharpness:
-        return FaceQuality(False, "blurred face")
+        return result(False, "blurred face")
     if len(face.landmarks) != 5:
-        return FaceQuality(False, "landmarks unavailable")
+        return result(False, "landmarks unavailable")
     points = np.array([(x * frame.width, y * frame.height) for x, y in face.landmarks])
     eye_mid = (points[0] + points[1]) / 2
     eye_span = float(np.linalg.norm(points[1] - points[0]))
     mouth_mid = (points[3] + points[4]) / 2
     if eye_span < 1 or mouth_mid[1] <= eye_mid[1]:
-        return FaceQuality(False, "invalid landmark geometry")
+        return result(False, "invalid landmark geometry")
     yaw = float((points[2, 0] - eye_mid[0]) / eye_span)
     pitch = float((points[2, 1] - eye_mid[1]) / (mouth_mid[1] - eye_mid[1]))
     roll = abs(float(points[1, 1] - points[0, 1])) / eye_span
     if abs(yaw) > 0.35 or not 0.2 <= pitch <= 0.85 or roll > 0.3:
-        return FaceQuality(False, "extreme pose")
-    return FaceQuality(
-        True, "accepted", "left" if yaw < -0.08 else "right" if yaw > 0.08 else "center"
-    )
+        return result(False, "extreme pose")
+    return result(True, "accepted", "left" if yaw < -0.08 else "right" if yaw > 0.08 else "center")

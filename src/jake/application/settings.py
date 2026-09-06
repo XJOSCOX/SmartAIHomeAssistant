@@ -85,7 +85,9 @@ def save_config(path: Path, config: AppConfig) -> None:
     if path.is_symlink():
         raise ValueError("configuration symlinks cannot be overwritten")
     path.parent.mkdir(parents=True, exist_ok=True)
-    raw = tomli_w.dumps(asdict(config)).encode("utf-8")
+    values = asdict(config)
+    values["camera"] = {k: v for k, v in values["camera"].items() if v is not None}
+    raw = tomli_w.dumps(values).encode("utf-8")
     fd, temporary_name = tempfile.mkstemp(prefix=".jake-config-", dir=path.parent)
     temporary = Path(temporary_name)
     try:

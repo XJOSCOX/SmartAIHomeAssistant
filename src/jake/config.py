@@ -28,10 +28,34 @@ class PipelineConfig:
 @dataclass(frozen=True, slots=True)
 class CameraConfig:
     device: int = 0
+    width: int | None = None
+    height: int | None = None
+    fps: float | None = None
+    backend: str = "auto"
+    fourcc: str | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.device, bool) or not isinstance(self.device, int) or self.device < 0:
             raise ValueError("camera.device must be a non-negative local camera index")
+        for name, value in (("width", self.width), ("height", self.height)):
+            if value is not None and (type(value) is not int or value <= 0):
+                raise ValueError(f"camera.{name} must be a positive integer")
+        if self.fps is not None and (
+            isinstance(self.fps, bool)
+            or not isinstance(self.fps, (int, float))
+            or not isfinite(self.fps)
+            or self.fps <= 0
+        ):
+            raise ValueError("camera.fps must be finite and positive")
+        if self.backend not in ("auto", "dshow", "msmf", "v4l2", "gstreamer"):
+            raise ValueError("unsupported camera.backend")
+        if self.fourcc is not None and (
+            not isinstance(self.fourcc, str)
+            or len(self.fourcc) != 4
+            or not self.fourcc.isascii()
+            or not self.fourcc.isprintable()
+        ):
+            raise ValueError("camera.fourcc must be four printable ASCII characters")
 
 
 @dataclass(frozen=True, slots=True)
@@ -261,8 +285,15 @@ def load_app_config(path: Path) -> AppConfig:
     if "camera_id" not in pipeline:
         raise ValueError("pipeline.camera_id is required")
     camera = data.get("camera", {})
-    if not isinstance(camera, dict) or set(camera) - {"device"}:
-        raise ValueError("[camera] permits only the device setting")
+    if not isinstance(camera, dict) or set(camera) - {
+        "device",
+        "width",
+        "height",
+        "fps",
+        "backend",
+        "fourcc",
+    }:
+        raise ValueError("[camera] contains unsupported settings")
     pipeline_config = PipelineConfig(
         camera_id=pipeline["camera_id"],
         min_person_confidence=pipeline.get("min_person_confidence", 0.5),
@@ -332,7 +363,7 @@ def load_app_config(path: Path) -> AppConfig:
         raise ValueError("unknown setting or invalid table in [identity]")
     return AppConfig(
         pipeline_config,
-        CameraConfig(device=camera.get("device", 0)),
+        CameraConfig(**camera),
         DetectorConfig(
             model=detector.get("model", defaults.model),
             device=detector.get("device", defaults.device),

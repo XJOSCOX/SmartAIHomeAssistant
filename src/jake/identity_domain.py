@@ -106,3 +106,16 @@ class FaceQuality:
     accepted: bool
     reason: str
     pose: str = "center"
+
+    face_width_px: int | None = None
+    face_height_px: int | None = None
+    minimum_pixels: int | None = None
+
+    @property
+    def summary(self) -> str:
+        if self.face_width_px is None or self.face_height_px is None:
+            return self.reason
+        size = f"{self.face_width_px}x{self.face_height_px} px"
+        if self.reason == "face too small":
+            return f"face too small: {size}; minimum {self.minimum_pixels} px"
+        return f"{self.reason}; Face {size}"
