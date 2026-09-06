@@ -1,7 +1,7 @@
 """Anonymous visitor metadata; never a resident or physical track identity."""
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from enum import StrEnum
 from math import isfinite
 from uuid import UUID
@@ -15,11 +15,14 @@ class VisitorState(StrEnum):
     VISITOR_CANDIDATE = "VISITOR_CANDIDATE"
     FIRST_TIME_VISITOR = "FIRST_TIME_VISITOR"
     RECURRING_VISITOR = "RECURRING_VISITOR"
+    FREQUENT_VISITOR = "FREQUENT_VISITOR"
     KNOWN_VISITOR = "KNOWN_VISITOR"
 
 
 @dataclass(frozen=True, slots=True)
 class VisitStatistics:
+    """Welford statistics over completed physical sessions, not visit days."""
+
     completed: int = 0
     mean_seconds: float = 0.0
     m2_seconds: float = 0.0
@@ -56,24 +59,29 @@ class VisitorProfile:
     created_at: datetime
     last_seen_at: datetime
     last_visit_at: datetime
-    visit_count: int = 1
+    session_count: int = 1
     statistics: VisitStatistics = VisitStatistics()
     display_name: str | None = None
     explicitly_labeled: bool = False
+    distinct_visit_days: int = 1
+    last_visit_local_date: date = field(kw_only=True)
 
     def __post_init__(self) -> None:
         UUID(self.visitor_id)
+        if (
+            type(self.session_count) is not int
+            or type(self.distinct_visit_days) is not int
+            or not 1 <= self.distinct_visit_days <= self.session_count
+            or type(self.last_visit_local_date) is not date
+        ):
+            raise ValueError("invalid visitor day metadata")
         if any(
             t.utcoffset() is None for t in (self.created_at, self.last_seen_at, self.last_visit_at)
         ):
             raise ValueError("visitor timestamps must be timezone-aware")
         if not self.created_at <= self.last_visit_at <= self.last_seen_at:
             raise ValueError("invalid visitor timeline")
-        if (
-            type(self.visit_count) is not int
-            or self.visit_count < 1
-            or self.statistics.completed > self.visit_count
-        ):
+        if self.statistics.completed > self.session_count:
             raise ValueError("invalid visitor count")
         if type(self.explicitly_labeled) is not bool or self.explicitly_labeled != (
             self.display_name is not None
@@ -92,8 +100,9 @@ class VisitorProfile:
 class VisitorMatch:
     state: VisitorState = VisitorState.UNKNOWN
     visitor_id: str | None = None
-    visit_count: int = 0
+    session_count: int = 0
     display_name: str | None = None
+    distinct_visit_days: int = 0
 
 
 @dataclass(frozen=True, slots=True)

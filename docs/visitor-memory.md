@@ -1,4 +1,4 @@
-# Phase 2D: privacy-governed anonymous recurring visitor memory
+# Phase 2D.2: meaningful visitor frequency
 
 ## Scope and opt-in
 
@@ -48,8 +48,10 @@ with its own strict schema. It composes the Phase 2C encrypted file primitives;
 visitor profiles never subclass or enter resident records.
 
 In programmatic pipelines, construct the face service with `collect_visitors=True`,
-and inject `VisitorMemory(..., is_nonresident=identity.confidently_nonresident)` along
-with that service. The resident guard is a required callback. Person-event return
+and inject `VisitorMemory(..., timezone=config.home.timezone,
+is_nonresident=identity.confidently_nonresident)` along
+with that service. Construct `EncryptedVisitorStore` with the same `timezone` keyword.
+The resident guard is a required callback. Person-event return
 values remain unchanged; `pipeline.visitor_matches` and `pipeline.visitor_events`
 are separate metadata outputs. Use fresh services for each camera session and one
 live writer per store; multi-hub synchronization is not implemented.
@@ -102,7 +104,9 @@ the actual gate responsible for rejection.
 | `nonresident_recovery_observations` | 3 | Spaced nonresident observations needed after a pause |
 | `match_similarity` | 0.70 | Conservative visitor cosine threshold |
 | `ambiguity_margin` | 0.10 | Separation from runner-up and uncertainty band |
-| `recurring_visit_count` | 2 | Distinct confirmed visits needed for recurring status |
+| `recurrence_policy` | distinct_day | Only supported frequency policy |
+| `recurring_distinct_days` | 2 | Local visit days needed for recurring status |
+| `frequent_distinct_days` | 5 | Local visit days needed for frequent status |
 | `retention_days` | 30 | Time since last accepted face evidence before expiry |
 
 These defaults demand more evidence than resident recognition; they are not calibrated
@@ -141,6 +145,10 @@ VISITOR track=3 blocked resident confirmed
 VISITOR track=3 confirmed FIRST_TIME_VISITOR
 ```
 
+Encoder-idle "waiting for face observation" gaps do not replace the last meaningful
+reason. Identical reasons are suppressed across these gaps; changed progress, rejection,
+and confirmation reasons still print. Removed tracks release their diagnostic state.
+
 Diagnostics include scalar confidence/similarity, progress, and explicit quality or
 matching rejection reasons, never biometric vectors or crops. They are session-local,
 not part of encrypted storage. For future validation after review, append
@@ -176,16 +184,62 @@ cost, and the preview FPS includes it. This is a single-camera development stage
 
 ## Visits, states, and event semantics
 
-A visit begins with `PERSON_ENTERED` and ends only with finalized `PERSON_LEFT` from
-the existing person-event generator. Frames, missed detections and periodic PRESENT
-events are not visits. Profiles are created only after face confirmation, with their
-first semantic entry timestamp and `visit_count=1`.
+A physical presence session begins with `PERSON_ENTERED` and ends only with finalized
+`PERSON_LEFT`. Frames, missed detections and periodic PRESENT events are not sessions.
+After the first successful face confirmation, a new profile has `session_count=1`,
+`distinct_visit_days=1`, and `last_visit_local_date` set to the confirmation frame's
+household date. A later confirmed presence session increments `session_count` once.
+It increments `distinct_visit_days` only if its local confirmation date is later than
+the stored date. Five separate sessions on Monday therefore mean five sessions and
+one day. A Tuesday return means six sessions and two days.
 
-For an existing profile, multiple supporting observations during a **later** presence
-session increment `visit_count` once. At the configured count (default two), the result
-becomes RECURRING_VISITOR. Deliberate labeling changes it to KNOWN_VISITOR even if only
-one visit has occurred. Removing a label returns to the count-based anonymous state.
-KNOWN_VISITOR is never RESIDENT; resident enrollment remains separate.
+| Presentation precedence | Condition |
+| --- | --- |
+| KNOWN_VISITOR | Explicit operator label |
+| FREQUENT_VISITOR | At least `frequent_distinct_days` (default 5) |
+| RECURRING_VISITOR | At least `recurring_distinct_days` (default 2) |
+| FIRST_TIME_VISITOR | Otherwise, a confirmed profile |
+
+UNKNOWN and VISITOR_CANDIDATE remain observation/confirmation states. A label does
+not reset aggregates; removing it reveals the current count-derived state. Frequent
+and recurring mean observation frequency, never trust, authorization, safety, intent,
+or household membership. KNOWN means explicitly named, never automatically RESIDENT.
+Resident enrollment remains separate. Recognition and resident-first gates are unchanged.
+
+### Household calendar
+
+```toml
+[home]
+timezone = "America/Chicago" # Choose the household's IANA zone.
+
+[visitors]
+recurrence_policy = "distinct_day"
+recurring_distinct_days = 2
+frequent_distinct_days = 5
+```
+
+Configuration requires integer `frequent_distinct_days > recurring_distinct_days >= 2`.
+Only `distinct_day` is implemented; `minimum_gap` is reserved for future design and
+currently rejected. The old `recurring_visit_count` key produces an actionable error:
+replace it with the explicit day thresholds instead of silently changing its units.
+The ignored operator `config/local.toml` is not rewritten by this change.
+
+`home.timezone` defaults to UTC for configurations without a household zone. Set it
+explicitly before creating or migrating visitor memory. Frame timestamps remain aware
+instants; `ZoneInfo` converts them to household dates, independent of OS timezone.
+The declared `tzdata` dependency supplies IANA data on Windows as well as hosts without
+system data ([Python zoneinfo documentation](https://docs.python.org/3/library/zoneinfo.html)).
+UTC midnight alone does not count a new day. Local midnight does, on the next confirmed
+session; spring-forward and repeated fall-back hours remain one local date.
+
+A continuous overnight session counts only its first confirmation day. Reconfirmation
+within that same semantic session does not add days or sessions. No date list is stored.
+The last counted date is a high-water mark: backdated sessions after a clock rollback
+can add sessions but cannot recount an earlier date. This conservatively undercounts
+rather than inventing distinct days. Backward timestamps within a running pipeline
+remain rejected. The encrypted payload binds the configured timezone name; a changed
+zone fails clearly without rewriting historical aggregates. Automatic timezone rebasing
+is not implemented.
 
 Recently-lost body ReID retains the same visit and count. Its continuity epoch clears
 visitor face confirmation; five fresh observations of the same face restore the label
@@ -196,8 +250,11 @@ evidence requires renewed multi-observation confirmation. Clothing alone cannot 
 a visitor profile. Evidence buffers disappear on LEFT.
 
 Separate metadata events are `VISITOR_FIRST_SEEN`, `VISITOR_RECOGNIZED`,
-`VISITOR_BECAME_RECURRING` (threshold transition only), and `VISITOR_LEFT`. They contain
-event/visitor UUIDs, frame timestamps/context, track ID, state, count and an optional
+`VISITOR_BECAME_RECURRING`, `VISITOR_BECAME_FREQUENT` (day-threshold crossings only),
+and `VISITOR_LEFT`. Each threshold event occurs once when the day count crosses it;
+same-day sessions never repeat it. This assumes stable configured thresholds; changing
+thresholds recalculates presentation but does not synthesize historical events. They contain
+event/visitor UUIDs, frame timestamps/context, track ID, state, session/day counts and an optional
 explicit display name. They never contain vectors, crops, audio or movement history.
 The preview shows short anonymous IDs or explicit names; full UUIDs are reserved for
 debug/management use. Metadata console output can still disclose household presence.
@@ -212,7 +269,8 @@ deleted or converted into residents.
 
 ## Statistics without visit histories
 
-Profiles store `visit_count` and Welford aggregates: completed-duration sample count
+Profiles store `session_count`, `distinct_visit_days`, `last_visit_local_date`, and
+Welford aggregates over **completed physical sessions**: completed-duration sample count
 `n`, mean duration and `M2`. Counted visits may exceed completed samples after crashes
 or unresolved session endings. On one finalized LEFT, duration is frame-timeline
 `left_at - entered_at`, including brief body ReID gaps:
@@ -226,7 +284,7 @@ sample_variance = M2 / (n - 1), if n > 1; otherwise 0
 ```
 
 This avoids subtracting large squared sums and stores no duration list. Variance is
-in seconds squared. Count/statistics update once per finalized visit. Small negative
+in seconds squared. Duration statistics update once per finalized session, independently of distinct days. Small negative
 roundoff in M2 is clamped to zero; invalid/non-finite durations are rejected.
 
 ## Storage, retention, and management
@@ -238,15 +296,42 @@ The same Windows Credential Manager/Linux Secret Service provider architecture h
 the key; no key is stored beside ciphertext. Resident envelopes retain their original
 domain/key and need no migration. Decrypting under the wrong domain fails closed.
 
-Visitor payload version 1 contains only UUID, one face template/model fingerprint,
-created/last-seen/last-visit timestamps, visit count, duration aggregates, and optional
-explicit label/flag. Raw images, video, audio, clothing vectors, names inferred from
+Visitor payload version 2 contains the household timezone and profiles with UUID,
+one face template/model fingerprint, created/last-seen/last-visit timestamps,
+`session_count`, `distinct_visit_days`, `last_visit_local_date`, duration aggregates,
+and optional explicit label/flag. The outer encryption envelope remains version 2. Raw images, video, audio, clothing vectors, names inferred from
 appearance, and full visit/movement history are excluded. Writes reuse Phase 2C lock,
 permissions, encrypted-only temporary file, fsync, readback validation and atomic
 replacement. Resident and visitor writes share the directory writer lock; they do
 not share schemas, keys or data files. Key loss, same-account malware, backup recovery,
 rollback and Python memory limitations remain as documented in
 [encrypted identity storage](encrypted-identity-storage.md).
+
+### Explicit migration of existing visitor data
+
+Older encrypted payload v1 profiles are preserved, not discarded or silently upgraded.
+Authentication and strict legacy-schema validation precede a clear migration-required
+error on ordinary access. After repository review, with live sessions stopped and the
+household timezone/threshold configuration chosen, the migration command is:
+
+```sh
+uv run --extra identity jake-visitors --config config/local.toml --migrate-store
+```
+
+Migration preserves UUID, template values/model fingerprint exactly, timestamps,
+explicit label and all Welford aggregates. Old `visit_count` becomes `session_count`;
+every existing profile starts with `distinct_visit_days=1`. Its initial local date is
+derived from old `last_visit_at` in the configured household timezone. Historic sessions
+cannot establish historic distinct days. An anonymous old RECURRING profile can safely
+become FIRST_TIME until another local-day return; explicit labels retain precedence.
+
+The operation reuses the existing visitor key and authenticated domain. It transforms
+only authenticated data in memory, writes an encrypted temporary file, verifies its
+decryption/schema/content, and atomically replaces the original. Failure before replace
+leaves the original intact and cleans the temporary file. Repeating migration validates
+the current payload and reports that no migration is needed, without rewriting or
+creating another key. Migration does **not** run retention or touch residents. No real
+enrolled store was accessed or migrated during this implementation; tests use fake keys.
 
 Retention uses camera/frame time during live processing. Profiles older than the
 retention cutoff are removed from the active encrypted file. Last-seen evidence is
@@ -258,7 +343,9 @@ also expire overdue profiles using current UTC. Thus retention runs on next enab
 processing/management, not while Jake is stopped.
 
 Stop live visitor sessions before management, labeling or resident enrollment changes.
-The dedicated CLI does not open a camera or alter resident records:
+The dedicated CLI does not open a camera or alter resident records. `--list` displays
+UUID/name, state using loaded thresholds, Sessions, Visit Days, completed session
+samples, mean session duration and sample variance, never vectors:
 
 ```sh
 uv run --extra identity jake-visitors --config config/local.toml --list

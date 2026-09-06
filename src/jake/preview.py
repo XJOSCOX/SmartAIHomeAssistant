@@ -15,6 +15,7 @@ from jake.diagnostics import TrackDiagnostic, measure_detection
 from jake.domain import FrameContext, PersonDetection, PersonEvent, PersonTrack
 from jake.face_identity import FaceIdentityService
 from jake.ports import AppearanceEncoder, EventGenerator, PersonDetector, PersonTracker
+from jake.visitor_diagnostics import VisitorDiagnostics
 from jake.visitor_domain import VisitorMatch, VisitorState
 from jake.visitors import VisitorMemory
 
@@ -67,7 +68,7 @@ def preview(
         raise ValueError("identity preview requires tracking")
     if visitors is not None and (identity is None or events is None):
         raise ValueError("visitor preview requires identity and person events")
-    previous_visitor_diagnostics: dict[str, str] = {}
+    visitor_diagnostics = VisitorDiagnostics()
     with OpenCVCamera(config.pipeline.camera_id, config.camera) as camera:
         try:
             cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
@@ -112,10 +113,8 @@ def preview(
                                     face_diagnostics=identity.visitor_diagnostics,
                                 )
                                 if debug_visitors or track_diagnostics is not None:
-                                    for track_id, reason in visitors.diagnostics.items():
-                                        if previous_visitor_diagnostics.get(track_id) != reason:
-                                            print(f"VISITOR track={track_id} {reason}")
-                                    previous_visitor_diagnostics = dict(visitors.diagnostics)
+                                    for line in visitor_diagnostics.changes(visitors.diagnostics):
+                                        print(line)
                                 identity.visitor_observations.clear()
                                 for visitor_event in visitor_events:
                                     print(

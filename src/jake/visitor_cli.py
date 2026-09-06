@@ -7,12 +7,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from jake.config import load_app_config
+from jake.visitors import visitor_match
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Manage encrypted anonymous visitor memory")
     parser.add_argument("--config", type=Path, default=Path("config/local.toml"))
     action = parser.add_mutually_exclusive_group(required=True)
+    action.add_argument("--migrate-store", action="store_true")
     action.add_argument("--list", action="store_true")
     action.add_argument("--delete", metavar="VISITOR_UUID")
     action.add_argument("--delete-all", action="store_true")
@@ -26,13 +28,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         from jake.adapters.visitor_store import EncryptedVisitorStore
 
         config = load_app_config(args.config)
-        store = EncryptedVisitorStore(Path(config.identity.store_path))
+        store = EncryptedVisitorStore(
+            Path(config.identity.store_path), timezone=config.home.timezone
+        )
+        if args.migrate_store:
+            print(store.migrate())
+            return 0
         store.expire(datetime.now(UTC), config.visitors.retention_days)
         if args.list:
+            print(
+                f"Timezone: {config.home.timezone} "
+                f"| recurring >= {config.visitors.recurring_distinct_days} "
+                f"days | frequent >= {config.visitors.frequent_distinct_days} days"
+            )
             for p in store.profiles():
                 print(
-                    f"{p.visitor_id} | {p.display_name or 'ANONYMOUS'} | visits={p.visit_count} "
-                    f"| mean={p.statistics.mean_seconds:.1f}s "
+                    f"{p.visitor_id} | {p.display_name or 'ANONYMOUS'} "
+                    f"| {visitor_match(p, config.visitors).state} "
+                    f"| Sessions={p.session_count} | Visit Days={p.distinct_visit_days} "
+                    f"| completed sessions={p.statistics.completed} "
+                    f"| session mean={p.statistics.mean_seconds:.1f}s "
                     f"| variance={p.statistics.variance_seconds:.1f}s^2"
                 )
         elif args.delete:

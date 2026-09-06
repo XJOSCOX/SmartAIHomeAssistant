@@ -88,5 +88,11 @@ resident_candidate_window_seconds = 3.0
 nonresident_recovery_observations = 3
 match_similarity = 0.70
 ambiguity_margin = 0.10
-recurring_visit_count = 2
+recurrence_policy = "distinct_day"
+recurring_distinct_days = 2
+frequent_distinct_days = 5
 retention_days = 30
+
+[home]
+# Configure before creating/migrating visitor memory.
+timezone = "America/Chicago"

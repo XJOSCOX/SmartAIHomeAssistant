@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from jake.domain import EventKind, FrameContext, PersonEvent, PersonTrack
 from jake.identity import IdentityError, face_cosine, face_normalize
@@ -24,17 +25,22 @@ def _replace_with(profile: VisitorProfile) -> Callable[[VisitorProfile], Visitor
     return lambda _: profile
 
 
-def visitor_match(profile: VisitorProfile, recurring_count: int) -> VisitorMatch:
-    state = (
-        VisitorState.KNOWN_VISITOR
-        if profile.explicitly_labeled
-        else (
-            VisitorState.RECURRING_VISITOR
-            if profile.visit_count >= recurring_count
-            else VisitorState.FIRST_TIME_VISITOR
-        )
+def visitor_match(profile: VisitorProfile, config: VisitorConfig) -> VisitorMatch:
+    if profile.explicitly_labeled:
+        state = VisitorState.KNOWN_VISITOR
+    elif profile.distinct_visit_days >= config.frequent_distinct_days:
+        state = VisitorState.FREQUENT_VISITOR
+    elif profile.distinct_visit_days >= config.recurring_distinct_days:
+        state = VisitorState.RECURRING_VISITOR
+    else:
+        state = VisitorState.FIRST_TIME_VISITOR
+    return VisitorMatch(
+        state,
+        profile.visitor_id,
+        profile.session_count,
+        profile.display_name,
+        profile.distinct_visit_days,
     )
-    return VisitorMatch(state, profile.visitor_id, profile.visit_count, profile.display_name)
 
 
 @dataclass
@@ -68,10 +74,12 @@ class VisitorMemory:
         config: VisitorConfig,
         store: VisitorStore,
         *,
+        timezone: str = "UTC",
         is_nonresident: Callable[[FaceEmbedding], bool],
         new_id: Callable[[], str] = lambda: str(uuid4()),
     ) -> None:
         self.config, self.store, self.new_id = config, store, new_id
+        self.timezone = ZoneInfo(timezone)
         self.is_nonresident = is_nonresident
         self._visits: dict[str, _Visit] = {}
         self._last: FrameContext | None = None
@@ -114,7 +122,7 @@ class VisitorMemory:
                     kind,
                     context,
                     track_id,
-                    visitor_match(profile, self.config.recurring_visit_count),
+                    visitor_match(profile, self.config),
                 )
             )
 
@@ -217,9 +225,7 @@ class VisitorMemory:
                     and visit.last_proof
                     and (now - visit.last_proof).total_seconds() <= self.config.carry_seconds
                 ):
-                    results[track_id] = visitor_match(
-                        profiles[visit.visitor_id], self.config.recurring_visit_count
-                    )
+                    results[track_id] = visitor_match(profiles[visit.visitor_id], self.config)
                 continue
             embedding = observation.embedding
             if not self.is_nonresident(embedding):
@@ -281,9 +287,7 @@ class VisitorMemory:
                 visit.samples.clear()
                 continue
             if visit.verified and visit.visitor_id in profiles:
-                state = visitor_match(
-                    profiles[visit.visitor_id], self.config.recurring_visit_count
-                ).state
+                state = visitor_match(profiles[visit.visitor_id], self.config).state
                 self.diagnostics[track_id] = f"confirmed {state}"
                 visit.last_proof = now
                 profile = profiles[visit.visitor_id]
@@ -292,9 +296,7 @@ class VisitorMemory:
                     profile = replace(profile, last_seen_at=now)
                     self.store.update(profile.visitor_id, _replace_with(profile))
                     profiles[profile.visitor_id] = profile
-                results[track_id] = visitor_match(
-                    profiles[visit.visitor_id], self.config.recurring_visit_count
-                )
+                results[track_id] = visitor_match(profiles[visit.visitor_id], self.config)
                 continue
             visit.samples = [
                 (t, e)
@@ -369,26 +371,40 @@ class VisitorMemory:
             visit = self._visits[track_id]
             if selected is None:
                 profile = VisitorProfile(
-                    self.new_id(), centroid, visit.entered_at, now, visit.entered_at
+                    self.new_id(),
+                    centroid,
+                    visit.entered_at,
+                    now,
+                    visit.entered_at,
+                    last_visit_local_date=now.astimezone(self.timezone).date(),
                 )
                 self.store.add(profile)
                 emit("VISITOR_FIRST_SEEN", track_id, profile)
             else:
                 profile = profiles[selected]
                 if visit.visitor_id is None:
+                    local_date = now.astimezone(self.timezone).date()
+                    previous_days = profile.distinct_visit_days
                     profile = replace(
                         profile,
-                        visit_count=profile.visit_count + 1,
+                        session_count=profile.session_count + 1,
+                        distinct_visit_days=previous_days
+                        + (local_date > profile.last_visit_local_date),
+                        last_visit_local_date=max(local_date, profile.last_visit_local_date),
                         last_visit_at=max(profile.last_visit_at, visit.entered_at),
                         last_seen_at=max(profile.last_seen_at, now),
                     )
                     self.store.update(selected, _replace_with(profile))
                     emit("VISITOR_RECOGNIZED", track_id, profile)
-                    if profile.visit_count == self.config.recurring_visit_count:
-                        emit("VISITOR_BECAME_RECURRING", track_id, profile)
+                    for threshold, kind in (
+                        (self.config.recurring_distinct_days, "VISITOR_BECAME_RECURRING"),
+                        (self.config.frequent_distinct_days, "VISITOR_BECAME_FREQUENT"),
+                    ):
+                        if previous_days < threshold <= profile.distinct_visit_days:
+                            emit(kind, track_id, profile)
             profiles[profile.visitor_id] = profile
             visit.visitor_id, visit.verified, visit.last_proof = profile.visitor_id, True, now
             visit.samples.clear()
-            results[track_id] = visitor_match(profile, self.config.recurring_visit_count)
+            results[track_id] = visitor_match(profile, self.config)
             self.diagnostics[track_id] = f"confirmed {results[track_id].state}"
         return results, tuple(emitted)

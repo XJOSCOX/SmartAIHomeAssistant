@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from math import isfinite
 from pathlib import Path
 
+from jake.home_config import HomeConfig
 from jake.identity_config import IdentityConfig
 from jake.visitor_config import VisitorConfig
 
@@ -224,6 +225,7 @@ class AppConfig:
     events: EventConfig = EventConfig()
     identity: IdentityConfig = IdentityConfig()
     visitors: VisitorConfig = VisitorConfig()
+    home: HomeConfig = HomeConfig()
 
 
 def load_config(path: Path) -> PipelineConfig:
@@ -247,10 +249,11 @@ def load_app_config(path: Path) -> AppConfig:
         "events",
         "identity",
         "visitors",
+        "home",
     } or not isinstance(data.get("pipeline"), dict):
         raise ValueError(
             "configuration requires [pipeline] and permits "
-            "[camera], [detector], [tracking], [events], [identity], [visitors]"
+            "[camera], [detector], [tracking], [events], [identity], [visitors], [home]"
         )
     pipeline = data["pipeline"]
     if set(pipeline) - {"camera_id", "min_person_confidence"}:
@@ -307,7 +310,15 @@ def load_app_config(path: Path) -> AppConfig:
     if not isinstance(events, dict) or set(events) - {"present_interval_seconds"}:
         raise ValueError("[events] permits only present_interval_seconds")
     identity = data.get("identity", {})
+    home = data.get("home", {})
+    if not isinstance(home, dict) or set(home) - {"timezone"}:
+        raise ValueError("unknown setting or invalid table in [home]")
     visitors = data.get("visitors", {})
+    if isinstance(visitors, dict) and "recurring_visit_count" in visitors:
+        raise ValueError(
+            "replace visitors.recurring_visit_count with recurring_distinct_days; "
+            "frequency now counts local days, not sessions"
+        )
     if isinstance(visitors, dict) and "min_face_quality" in visitors:
         if "min_detector_confidence" in visitors:
             raise ValueError(
@@ -350,4 +361,5 @@ def load_app_config(path: Path) -> AppConfig:
         EventConfig(present_interval_seconds=events.get("present_interval_seconds", 5.0)),
         IdentityConfig(**identity),
         VisitorConfig(**visitors),
+        HomeConfig(**home),
     )

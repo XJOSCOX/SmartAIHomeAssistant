@@ -123,7 +123,9 @@ def test_first_profile_has_centroid_no_name_and_no_per_frame_visits(
     profile = store.profiles()[0]
     assert profile.template == A
     assert (
-        profile.visit_count == 1 and profile.display_name is None and not profile.explicitly_labeled
+        profile.session_count == 1
+        and profile.display_name is None
+        and not profile.explicitly_labeled
     )
     for i in range(5, 30):
         assert t.step(i)["1"] == VisitorState.FIRST_TIME_VISITOR
@@ -138,7 +140,7 @@ def test_reid_same_session_and_final_left_count_once(store: EncryptedVisitorStor
     t.step(5, (replace(TRACK, missed_frames=2, recently_lost=True),), {})
     for i in range(6, 11):
         t.step(i, (replace(TRACK, continuity_epoch=1),))
-    assert store.profiles()[0].visitor_id == original and store.profiles()[0].visit_count == 1
+    assert store.profiles()[0].visitor_id == original and store.profiles()[0].session_count == 1
     t.step(12, ())
     t.step(13, ())
     profile = store.profiles()[0]
@@ -152,8 +154,8 @@ def test_separate_visit_recurring_and_welford(store: EncryptedVisitorStore) -> N
     t.confirm()
     t.step(10, ())
     t.confirm(20, replace(TRACK, track_id="2"))
-    assert store.profiles()[0].visit_count == 2
-    assert visitor_match(store.profiles()[0], 2).state == VisitorState.RECURRING_VISITOR
+    assert store.profiles()[0].session_count == 2
+    assert visitor_match(store.profiles()[0], CONFIG).state == VisitorState.FIRST_TIME_VISITOR
     t.step(40, ())
     stats = store.profiles()[0].statistics
     assert stats.completed == 2 and stats.mean_seconds == 15 and stats.variance_seconds == 50
@@ -161,19 +163,18 @@ def test_separate_visit_recurring_and_welford(store: EncryptedVisitorStore) -> N
         "VISITOR_FIRST_SEEN",
         "VISITOR_LEFT",
         "VISITOR_RECOGNIZED",
-        "VISITOR_BECAME_RECURRING",
         "VISITOR_LEFT",
     ]
 
 
 def test_recurring_threshold_configurable(store: EncryptedVisitorStore) -> None:
-    t = Timeline(store, replace(CONFIG, recurring_visit_count=3))
+    t = Timeline(store, replace(CONFIG, recurring_distinct_days=3))
     for visit in range(3):
-        t.confirm(visit * 20, replace(TRACK, track_id=str(visit + 1)))
-        assert visitor_match(store.profiles()[0], 3).state == (
+        t.confirm(visit * 86400, replace(TRACK, track_id=str(visit + 1)))
+        assert visitor_match(store.profiles()[0], t.memory.config).state == (
             VisitorState.RECURRING_VISITOR if visit == 2 else VisitorState.FIRST_TIME_VISITOR
         )
-        t.step(visit * 20 + 10, ())
+        t.step(visit * 86400 + 10, ())
     assert sum(e.kind == "VISITOR_BECAME_RECURRING" for e in t.emitted) == 1
 
 
@@ -227,11 +228,15 @@ def test_face_stage_resident_first_and_quality_gate() -> None:
 
 def test_similar_visitor_ambiguity_remains_unknown(store: EncryptedVisitorStore) -> None:
     for n, embedding in enumerate((A, face_normalize("test", (0.99, 0.1, 0))), 1):
-        store.add(VisitorProfile(str(UUID(int=n)), embedding, START, START, START))
+        store.add(
+            VisitorProfile(
+                str(UUID(int=n)), embedding, START, START, START, last_visit_local_date=START.date()
+            )
+        )
     t = Timeline(store)
     for i in range(10):
         assert t.step(i)["1"] == VisitorState.UNKNOWN
-    assert [p.visit_count for p in store.profiles()] == [1, 1]
+    assert [p.session_count for p in store.profiles()] == [1, 1]
 
 
 @pytest.mark.parametrize("similar", [True, False])
@@ -262,7 +267,7 @@ def test_label_remove_delete_retention_and_no_resident_mutation(
     original = store.profiles()[0]
     store.label(original.visitor_id, "Daniel")
     profile = store.profiles()[0]
-    assert visitor_match(profile, 2).state == VisitorState.KNOWN_VISITOR
+    assert visitor_match(profile, CONFIG).state == VisitorState.KNOWN_VISITOR
     assert profile.template == original.template
     store.label(profile.visitor_id, None)
     assert store.profiles()[0] == original
@@ -291,9 +296,9 @@ def test_encryption_key_domain_and_payload_separation(
     assert document["key_id"] != json.loads(resident_bytes)["key_id"]
     assert document["domain"] == VISITOR_DOMAIN
     assert resident_store.path.read_bytes() == resident_bytes
-    assert b'"values"' not in raw and b'"visit_count"' not in raw
+    assert b'"values"' not in raw and b'"session_count"' not in raw
     payload, _ = decrypt(document, memory_keys, VISITOR_DOMAIN)
-    assert EncryptedVisitorStore.parse(payload) == store.profiles()
+    assert store.parse(payload) == store.profiles()
     with pytest.raises(IdentityError):
         decrypt(document, memory_keys)
     ciphertext = bytearray(base64.b64decode(document["ciphertext"]))
@@ -330,7 +335,7 @@ def test_metadata_events_and_fixed_templates(store: EncryptedVisitorStore) -> No
         {"match_similarity": float("nan")},
         {"ambiguity_margin": 0.9},
         {"observation_window_seconds": 0.1},
-        {"recurring_visit_count": 1},
+        {"recurring_distinct_days": 1},
     ],
 )
 def test_invalid_visitor_config(changes: dict[str, object]) -> None:
@@ -393,7 +398,11 @@ def test_centroid_is_checked_again_before_persistence(
     if resident_guard:
         t.memory.is_nonresident = lambda e: face_cosine(e, C) < 0.45
     else:
-        store.add(VisitorProfile(str(UUID(int=77)), C, START, START, START))
+        store.add(
+            VisitorProfile(
+                str(UUID(int=77)), C, START, START, START, last_visit_local_date=START.date()
+            )
+        )
     for i in range(5):
         embedding = face_normalize(
             "test", (math.sqrt(1 - z * z - 0.25**2), 0.25 if i % 2 else -0.25, z)
@@ -406,11 +415,15 @@ def test_centroid_is_checked_again_before_persistence(
 def test_switching_strong_targets_resets_confirmation(store: EncryptedVisitorStore) -> None:
     other = face_normalize("test", (0.8, 0.6, 0))
     for n, embedding in enumerate((A, other), 60):
-        store.add(VisitorProfile(str(UUID(int=n)), embedding, START, START, START))
+        store.add(
+            VisitorProfile(
+                str(UUID(int=n)), embedding, START, START, START, last_visit_local_date=START.date()
+            )
+        )
     t = Timeline(store)
     for i in range(10):
         t.step(i, observations={"1": VisitorObservation(A if i % 2 else other, 0.99)})
-    assert [p.visit_count for p in store.profiles()] == [1, 1]
+    assert [p.session_count for p in store.profiles()] == [1, 1]
 
 
 def test_resident_guard_can_reject_direct_evidence(store: EncryptedVisitorStore) -> None:
@@ -426,7 +439,7 @@ def test_occupied_profile_cannot_label_another_track(store: EncryptedVisitorStor
     for i in range(5, 11):
         matches = t.step(i, (TRACK, replace(TRACK, track_id="2")))
         assert matches["2"] == VisitorState.UNKNOWN
-    assert store.profiles()[0].visit_count == 1
+    assert store.profiles()[0].session_count == 1
 
 
 def test_face_carry_expiry_and_hourly_retention_checkpoint(store: EncryptedVisitorStore) -> None:
@@ -574,7 +587,7 @@ def test_recovery_does_not_increment_existing_visit(store: EncryptedVisitorStore
     t.step(5, blocked={"1"})
     for i in range(6, 14):
         t.step(i)
-    assert store.profiles()[0].visit_count == 1
+    assert store.profiles()[0].session_count == 1
 
 
 def test_visitor_confidence_config_alias(tmp_path: Path) -> None:
@@ -611,3 +624,358 @@ def test_face_rejection_diagnostics_have_no_vectors() -> None:
     assert service.visitor_diagnostics["1"] == "rejected face too small"
     encoder.encode.assert_not_called()
     assert "values" not in repr(service.visitor_diagnostics)
+
+
+def test_same_day_five_sessions_then_five_days(store: EncryptedVisitorStore) -> None:
+    t = Timeline(store)
+    for session in range(5):
+        t.confirm(session * 600, replace(TRACK, track_id=str(session + 1)))
+        t.step(session * 600 + 10, ())
+        p = store.profiles()[0]
+        assert (p.session_count, p.distinct_visit_days) == (session + 1, 1)
+        assert visitor_match(p, CONFIG).state == VisitorState.FIRST_TIME_VISITOR
+    for day in range(1, 5):
+        t.confirm(day * 86400, replace(TRACK, track_id=str(day + 10)))
+        t.step(day * 86400 + 10, ())
+        p = store.profiles()[0]
+        assert (p.session_count, p.distinct_visit_days) == (5 + day, 1 + day)
+        assert visitor_match(p, CONFIG).state == (
+            VisitorState.FREQUENT_VISITOR if day == 4 else VisitorState.RECURRING_VISITOR
+        )
+        assert p.display_name is None
+    t.confirm(4 * 86400 + 600, replace(TRACK, track_id="99"))
+    t.step(4 * 86400 + 610, ())
+    assert sum(e.kind == "VISITOR_BECAME_RECURRING" for e in t.emitted) == 1
+    assert sum(e.kind == "VISITOR_BECAME_FREQUENT" for e in t.emitted) == 1
+    assert store.profiles()[0].statistics.completed == 10
+    assert store.profiles()[0].statistics.mean_seconds == 10
+    assert store.profiles()[0].statistics.variance_seconds == 0
+    assert "values" not in repr(t.emitted) and "template" not in repr(t.emitted)
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "days"),
+    [
+        ("2026-01-01T23:55:00+00:00", "2026-01-02T00:10:00+00:00", 1),
+        ("2026-01-02T05:55:00+00:00", "2026-01-02T06:10:00+00:00", 2),
+        ("2026-03-08T07:55:00+00:00", "2026-03-08T08:10:00+00:00", 1),
+        ("2026-11-01T06:55:00+00:00", "2026-11-01T07:10:00+00:00", 1),
+    ],
+)
+def test_household_calendar_and_dst(
+    store: EncryptedVisitorStore, first: str, second: str, days: int
+) -> None:
+    from zoneinfo import ZoneInfo
+
+    store.timezone = ZoneInfo("America/Chicago")
+    t = Timeline(store)
+    t.memory.timezone = store.timezone
+    a = (datetime.fromisoformat(first) - START).total_seconds()
+    b = (datetime.fromisoformat(second) - START).total_seconds()
+    t.confirm(a)
+    t.step(a + 10, ())
+    t.confirm(b, replace(TRACK, track_id="2"))
+    p = store.profiles()[0]
+    assert p.session_count == 2 and p.distinct_visit_days == days
+    assert (
+        p.last_visit_local_date == datetime.fromisoformat(second).astimezone(store.timezone).date()
+    )
+
+
+def test_confirmation_day_and_overnight_presence(store: EncryptedVisitorStore) -> None:
+    t = Timeline(store)
+    t.confirm(86398)  # Confirmation crosses midnight; entry date is not counted.
+    assert store.profiles()[0].last_visit_local_date == (START + timedelta(days=1)).date()
+    t.step(2 * 86400)
+    assert store.profiles()[0].distinct_visit_days == 1
+    assert store.profiles()[0].session_count == 1
+
+
+def test_label_precedence_counts_continue(store: EncryptedVisitorStore) -> None:
+    t = Timeline(store)
+    t.confirm()
+    visitor_id = store.profiles()[0].visitor_id
+    store.label(visitor_id, "Daniel")
+    t.step(10, ())
+    for day in range(1, 5):
+        t.confirm(day * 86400, replace(TRACK, track_id=str(day + 10)))
+        t.step(day * 86400 + 10, ())
+        assert visitor_match(store.profiles()[0], CONFIG).state == VisitorState.KNOWN_VISITOR
+    p = store.profiles()[0]
+    assert p.session_count == p.distinct_visit_days == 5
+    store.label(visitor_id, None)
+    assert visitor_match(store.profiles()[0], CONFIG).state == VisitorState.FREQUENT_VISITOR
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"recurring_distinct_days": 1},
+        {"frequent_distinct_days": 2},
+        {"recurring_distinct_days": 5, "frequent_distinct_days": 5},
+        {"frequent_distinct_days": "5"},
+        {"recurring_distinct_days": True},
+        {"recurrence_policy": "minimum_gap"},
+        {"frequent_distinct_days": float("nan")},
+    ],
+)
+def test_frequency_config_rejects_invalid(overrides: dict[str, object]) -> None:
+    with pytest.raises(ValueError):
+        VisitorConfig(**overrides)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("timezone", ["Invalid/Home", "", 3])
+def test_home_timezone_invalid(timezone: object) -> None:
+    from jake.home_config import HomeConfig
+
+    with pytest.raises(ValueError):
+        HomeConfig(timezone)  # type: ignore[arg-type]
+
+
+def legacy_document(store: EncryptedVisitorStore, keys: MemoryKeys) -> dict[str, object]:
+    """Build the actual old schema, never a plaintext on-disk fixture."""
+    from jake.identity_encryption import encrypt
+
+    profile = VisitorProfile(
+        str(UUID(int=123)),
+        A,
+        START,
+        START,
+        START,
+        14,
+        VisitStatistics(2, 15, 50),
+        "Daniel",
+        True,
+        last_visit_local_date=START.date(),
+    )
+    payload = store.payload((profile,))
+    assert isinstance(payload, dict)
+    payload.pop("timezone")
+    payload["version"] = 1
+    for row in payload["visitors"]:
+        row["visit_count"] = row.pop("session_count")
+        row.pop("distinct_visit_days")
+        row.pop("last_visit_local_date")
+    key_id, _ = keys.create()
+    document = encrypt(payload, key_id, keys, VISITOR_DOMAIN)
+    store._file.path.write_bytes(document)
+    return payload
+
+
+def test_explicit_legacy_migration_fidelity_and_idempotence(
+    store: EncryptedVisitorStore, memory_keys: MemoryKeys
+) -> None:
+    old = legacy_document(store, memory_keys)
+    before = store._file.path.read_bytes()
+    with pytest.raises(IdentityError, match="explicit migration"):
+        store.profiles()
+    assert store._file.path.read_bytes() == before
+    key_ids = set(memory_keys.keys)
+    assert "migrated" in store.migrate()
+    p = store.profiles()[0]
+    assert p.session_count == 14 and p.distinct_visit_days == 1
+    assert p.visitor_id == str(UUID(int=123)) and p.template == A
+    assert p.created_at == p.last_seen_at == p.last_visit_at == START
+    assert p.display_name == "Daniel" and p.explicitly_labeled
+    assert p.statistics == VisitStatistics(2, 15, 50)
+    assert p.last_visit_local_date == START.date()
+    migrated, _ = decrypt(json.loads(store._file.path.read_bytes()), memory_keys, VISITOR_DOMAIN)
+    assert isinstance(migrated, dict) and isinstance(old["visitors"], list)
+    assert migrated["visitors"][0]["template"] == old["visitors"][0]["template"]
+    after = store._file.path.read_bytes()
+    assert "already" in store.migrate()
+    assert store._file.path.read_bytes() == after
+    assert set(memory_keys.keys) == key_ids
+    assert b"Daniel" not in after and b"values" not in after
+    store.label(p.visitor_id, None)
+    assert visitor_match(store.profiles()[0], CONFIG).state == VisitorState.FIRST_TIME_VISITOR
+
+
+def test_migration_atomic_failure_preserves_original(
+    store: EncryptedVisitorStore, memory_keys: MemoryKeys, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    legacy_document(store, memory_keys)
+    before = store._file.path.read_bytes()
+    keys = dict(memory_keys.keys)
+    monkeypatch.setattr("jake.adapters.local_identity_store.os.replace", Mock(side_effect=OSError))
+    with pytest.raises(OSError):
+        store.migrate()
+    assert store._file.path.read_bytes() == before
+    assert memory_keys.keys == keys
+    assert list(store._file.root.glob(".residents-*")) == []
+
+
+def test_migration_tampered_ciphertext_fails_closed(
+    store: EncryptedVisitorStore, memory_keys: MemoryKeys
+) -> None:
+    legacy_document(store, memory_keys)
+    document = json.loads(store._file.path.read_text())
+    document["ciphertext"] = base64.b64encode(b"invalid ciphertext").decode()
+    store._file.path.write_text(json.dumps(document))
+    before = store._file.path.read_bytes()
+    with pytest.raises(IdentityError):
+        store.migrate()
+    assert store._file.path.read_bytes() == before
+
+
+def test_timezone_change_rejected_without_write(store: EncryptedVisitorStore) -> None:
+    from zoneinfo import ZoneInfo
+
+    Timeline(store).confirm()
+    before = store._file.path.read_bytes()
+    store.timezone = ZoneInfo("America/Chicago")
+    with pytest.raises(IdentityError, match="timezone"):
+        store.profiles()
+    assert store._file.path.read_bytes() == before
+
+
+def test_visitor_debug_suppresses_idle_alternation_and_preserves_progress() -> None:
+    from jake.visitor_diagnostics import VisitorDiagnostics
+
+    log = VisitorDiagnostics()
+    assert log.changes({"1": "waiting for face observation"})
+    for reason in (
+        "candidate 1/5",
+        "candidate 2/5",
+        "rejected face too small",
+        "confirmed FIRST_TIME_VISITOR",
+        "confirmed FREQUENT_VISITOR",
+    ):
+        assert log.changes({"1": reason}) == (f"VISITOR track=1 {reason}",)
+        for _ in range(10):
+            assert log.changes({"1": "waiting for face observation"}) == ()
+            assert log.changes({"1": reason}) == ()
+    assert log.changes({}) == ()
+    assert log._previous == {}
+    assert log.changes({"1": "candidate 1/5"})
+
+
+def test_migration_uses_household_date_and_skips_retention(
+    store: EncryptedVisitorStore,
+    memory_keys: MemoryKeys,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from zoneinfo import ZoneInfo
+
+    from jake.visitor_cli import main
+
+    legacy_document(store, memory_keys)
+    store.timezone = ZoneInfo("America/Chicago")
+    monkeypatch.setattr(
+        "jake.adapters.visitor_store.EncryptedVisitorStore", Mock(return_value=store)
+    )
+    expire = Mock(side_effect=AssertionError("migration must never prune real profiles"))
+    monkeypatch.setattr(store, "expire", expire)
+    config = tmp_path / "config.toml"
+    config.write_text('[pipeline]\ncamera_id="test"\n[home]\ntimezone="America/Chicago"')
+    assert main(["--config", str(config), "--migrate-store"]) == 0
+    assert "migrated" in capsys.readouterr().out
+    assert store.profiles()[0].last_visit_local_date == (START - timedelta(days=1)).date()
+    expire.assert_not_called()
+
+
+def test_migration_readback_failure_preserves_original(
+    store: EncryptedVisitorStore, memory_keys: MemoryKeys, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    legacy_document(store, memory_keys)
+    before = store._file.path.read_bytes()
+    monkeypatch.setattr(
+        "jake.adapters.local_identity_store.decrypt",
+        Mock(side_effect=IdentityError("verification failure")),
+    )
+    with pytest.raises(IdentityError, match="verification"):
+        store.migrate()
+    assert store._file.path.read_bytes() == before
+    assert list(store._file.root.glob(".residents-*")) == []
+    assert len(memory_keys.keys) == 1
+
+
+@pytest.mark.parametrize("version", [1, 2, 3, True])
+def test_authenticated_malformed_schema_never_migrates(
+    store: EncryptedVisitorStore, memory_keys: MemoryKeys, version: object
+) -> None:
+    from jake.identity_encryption import encrypt
+
+    key_id, _ = memory_keys.create()
+    raw = encrypt({"version": version, "visitors": [{}]}, key_id, memory_keys, VISITOR_DOMAIN)
+    store._file.path.write_bytes(raw)
+    with pytest.raises(IdentityError, match="corrupt"):
+        store.migrate()
+    assert store._file.path.read_bytes() == raw
+
+
+def test_frequency_management_uses_config_thresholds(
+    store: EncryptedVisitorStore,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from jake.visitor_cli import main
+
+    Timeline(store).confirm()
+    p = store.profiles()[0]
+    store.update(p.visitor_id, lambda p: replace(p, session_count=12, distinct_visit_days=4))
+    monkeypatch.setattr(
+        "jake.adapters.visitor_store.EncryptedVisitorStore", Mock(return_value=store)
+    )
+    monkeypatch.setattr(store, "expire", Mock())
+    config = tmp_path / "config.toml"
+    config.write_text('[pipeline]\ncamera_id="test"\n[visitors]\nfrequent_distinct_days=4')
+    assert main(["--config", str(config), "--list"]) == 0
+    out = capsys.readouterr().out
+    assert "FREQUENT_VISITOR" in out and "Sessions=12" in out and "Visit Days=4" in out
+    assert "completed sessions=" in out and "values" not in out and "template" not in out
+
+
+@pytest.mark.parametrize(
+    "table",
+    ["[home]\nunknown=3", '[home]\ntimezone="Bad/Zone"', "[visitors]\nrecurring_visit_count=2"],
+)
+def test_calendar_configuration_errors(tmp_path: Path, table: str) -> None:
+    config = tmp_path / "bad.toml"
+    config.write_text('[pipeline]\ncamera_id="test"\n' + table)
+    with pytest.raises(ValueError):
+        load_app_config(config)
+
+
+def test_restart_clock_rollback_does_not_recount_days(store: EncryptedVisitorStore) -> None:
+    t = Timeline(store)
+    t.confirm(86400)
+    t.step(86410, ())
+    t = Timeline(store)  # A new process can have an older but aware frame timeline.
+    t.confirm()
+    p = store.profiles()[0]
+    assert p.session_count == 2 and p.distinct_visit_days == 1
+    assert p.last_visit_local_date == (START + timedelta(days=1)).date()
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"session_count": "2"},
+        {"session_count": False},
+        {"session_count": 0},
+        {"distinct_visit_days": 0},
+        {"distinct_visit_days": 2},
+        {"distinct_visit_days": True},
+        {"last_visit_local_date": None},
+        {"last_visit_local_date": "2026-01-01"},
+        {"last_seen_at": START.replace(tzinfo=None)},
+    ],
+)
+def test_invalid_frequency_profile_metadata(changes: dict[str, object]) -> None:
+    profile = VisitorProfile(
+        str(UUID(int=1)), A, START, START, START, last_visit_local_date=START.date()
+    )
+    with pytest.raises(ValueError):
+        replace(profile, **changes)  # type: ignore[arg-type]
+
+
+def test_empty_store_migration_does_not_create_key(
+    store: EncryptedVisitorStore, memory_keys: MemoryKeys
+) -> None:
+    with pytest.raises(IdentityError, match="does not exist"):
+        store.migrate()
+    assert memory_keys.keys == {} and not store._file.path.exists()

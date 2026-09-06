@@ -493,7 +493,9 @@ def test_identity_cli_wiring(
     desktop["capture"].release.assert_called_once()
 
 
+@pytest.mark.parametrize("state", ["RECURRING_VISITOR", "FREQUENT_VISITOR", "FIRST_TIME_VISITOR"])
 def test_visitor_cli_opt_in_and_preview(
+    state: str,
     desktop: dict[str, Mock],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -508,11 +510,7 @@ def test_visitor_cli_opt_in_and_preview(
     identity.return_value.process.return_value = ({"7": IdentityMatch(IdentityState.UNKNOWN)}, ())
     identity.return_value.visitor_observations = {}
     visitors.return_value.process.return_value = (
-        {
-            "7": VisitorMatch(
-                VisitorState.RECURRING_VISITOR, "7a310000-0000-0000-0000-000000000001", 2
-            )
-        },
+        {"7": VisitorMatch(VisitorState(state), "7a310000-0000-0000-0000-000000000001", 2)},
         (),
     )
     monkeypatch.setattr("jake.adapters.yolo_detector.YoloPersonDetector", detector)
@@ -530,7 +528,7 @@ def test_visitor_cli_opt_in_and_preview(
     assert identity.call_args.kwargs["collect_visitors"] is True
     assert visitors.call_args.args[0].enabled is True
     labels = [call.args[1] for call in desktop["putText"].call_args_list]
-    assert "ID 7 | VISITOR 7A31 | RECURRING_VISITOR" in labels
+    assert f"ID 7 | VISITOR 7A31 | {state}" in labels
     assert not any("7a310000-" in label for label in labels)
     visitors.reset_mock()
     assert main(["--config", str(path), "--track", "--no-visitors"]) == 0

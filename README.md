@@ -52,7 +52,7 @@ Migration command for after repository review (no camera required):
 uv run --extra identity jake-enroll-resident --config config/local.toml --migrate-store
 ```
 
-## Phase 2D visitor memory
+## Phase 2D.2 visitor frequency
 
 Phase 2D visitor persistence defaults **off**. It requires five quality-approved,
 confidently non-resident face observations, never just an UNKNOWN frame. Visits follow
@@ -72,6 +72,20 @@ Future live command, after repository review and existing local model setup:
 ```sh
 uv run --extra identity --extra detection --extra appearance jake-camera --config config/local.toml --track --tracker kalman --assignment hungarian --appearance --reid --events --identity --visitors
 ```
+
+Frequency counts **distinct household-local visit days**, separately from physical
+presence sessions. Same-day returns stay FIRST_TIME; defaults are RECURRING at two
+days and FREQUENT at five. Explicit labels take KNOWN precedence without granting
+resident status or trust. `[home] timezone` uses an IANA zone (UTC default); the example
+configuration uses America/Chicago. Welford duration statistics still count completed
+physical sessions. Debug logs suppress repetitive encoder-idle/confirmed alternation.
+
+Existing encrypted visitor payloads require the explicit, authenticated
+`jake-visitors --config config/local.toml --migrate-store` upgrade after repository
+review and configuration updates. Old session counts/templates are preserved; distinct
+days initialize conservatively to one. Resident storage is unchanged. See the
+[migration and calendar policy](docs/visitor-memory.md#explicit-migration-of-existing-visitor-data)
+before future live execution. No real visitor data was migrated during implementation.
 
 The visitor store is `.jake-identities/visitors.json` by default. It has a separate
 key and authenticated domain from residents. Use `--no-visitors` to override an

@@ -165,7 +165,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
                 visitors = VisitorMemory(
                     config.visitors,
-                    EncryptedVisitorStore(Path(config.identity.store_path)),
+                    EncryptedVisitorStore(
+                        Path(config.identity.store_path), timezone=config.home.timezone
+                    ),
+                    timezone=config.home.timezone,
                     is_nonresident=identity.confidently_nonresident,
                 )
         preview(
