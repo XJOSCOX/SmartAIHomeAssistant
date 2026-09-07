@@ -11,6 +11,7 @@ requires-python = ">=3.11"
 dependencies = ["tzdata>=2025.2"]
 
 [project.optional-dependencies]
+voice = ["sounddevice>=0.5,<0.6", "webrtcvad-wheels>=2.0.14,<3", "faster-whisper>=1.2,<2", "piper-tts>=1.3,<2", "numpy>=2,<3"]
 desktop = ["PySide6>=6.8,<7", "tomli-w>=1.2,<2"]
 packaging = ["pyinstaller>=6.16,<7"]
 tracking = ["numpy>=2,<3"]
@@ -21,6 +22,7 @@ appearance = ["openvino==2026.3.1", "opencv-python>=4.13,<5", "numpy>=2,<3"]
 identity = ["cryptography==50.0.1", "keyring==25.7.0"]
 
 [project.scripts]
+jake-voice = "jake.voice_cli:main"
 jake-camera = "jake.cli:main"
 jake-enroll-resident = "jake.enroll_cli:main"
 jake-visitors = "jake.visitor_cli:main"

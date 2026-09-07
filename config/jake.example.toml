@@ -104,3 +104,43 @@ retention_days = 30
 [home]
 # Configure before creating/migrating visitor memory.
 timezone = "America/Chicago"
+
+# Phase 3A: explicit CLI opt-in; desktop launch does not start audio.
+[audio]
+enabled = false
+# Omit devices to use OS defaults; indexes and descriptions are host-specific.
+# input_device = 0
+# output_device = 1
+sample_rate = 16000
+channels = 1
+queue_chunks = 16
+
+[speech]
+language = "en"
+# WebRTC aggressiveness 0..3, not a probability threshold. VAD is mandatory.
+vad_mode = 2
+minimum_speech_ms = 240
+silence_timeout_ms = 600
+max_utterance_seconds = 15.0
+pre_roll_ms = 180
+echo_guard_ms = 300
+
+[stt]
+# Existing local CTranslate2 directory only; Jake never downloads this model.
+model = "models/speech/faster-whisper-base.en"
+device = "cpu"
+compute_type = "int8"
+cpu_threads = 2
+
+[tts]
+engine = "piper"
+# Matching .onnx.json file must exist alongside this voice.
+voice = "models/speech/en_US-lessac-medium.onnx"
+
+[interaction]
+resident_greeting_enabled = false
+visitor_greeting_enabled = false
+greeting_cooldown_minutes = 60
+conversation_timeout_seconds = 60
+visual_context_max_age_seconds = 2
+max_turns = 20

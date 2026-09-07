@@ -6,6 +6,17 @@ support natural conversation. **Phase 2D adds opt-in anonymous recurring visitor
 separate from enrolled residents, with encrypted templates and retention controls.
 All tracker modes remain available; track IDs are session-local, not resident identities.**
 
+## Phase 3A local voice foundation
+
+Opt-in local microphone capture, WebRTC VAD, faster-whisper transcription and Piper
+speech output now feed a bounded, deterministic conversation service. There is no LLM,
+audio archive or transcript persistence. Optional camera integration supplies conservative
+visual association and explicitly enabled semantic arrival greetings.
+
+See the [local voice architecture and setup guide](docs/local-voice.md) for model setup,
+device selection, commands, privacy boundaries and platform limitations. Microphone and
+speech-model testing is deferred until repository review; existing camera commands remain available.
+
 ## Phase 2F Desktop Control Center
 
 Jake now provides a native Windows PySide6 dashboard, embedded camera, consent-based

@@ -8,6 +8,7 @@ from pathlib import Path
 from jake.home_config import HomeConfig
 from jake.identity_config import IdentityConfig
 from jake.visitor_config import VisitorConfig
+from jake.voice_config import AudioConfig, InteractionConfig, SpeechConfig, STTConfig, TTSConfig
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,6 +251,11 @@ class AppConfig:
     identity: IdentityConfig = IdentityConfig()
     visitors: VisitorConfig = VisitorConfig()
     home: HomeConfig = HomeConfig()
+    audio: AudioConfig = AudioConfig()
+    speech: SpeechConfig = SpeechConfig()
+    stt: STTConfig = STTConfig()
+    tts: TTSConfig = TTSConfig()
+    interaction: InteractionConfig = InteractionConfig()
 
 
 def load_config(path: Path) -> PipelineConfig:
@@ -274,10 +280,16 @@ def load_app_config(path: Path) -> AppConfig:
         "identity",
         "visitors",
         "home",
+        "audio",
+        "speech",
+        "stt",
+        "tts",
+        "interaction",
     } or not isinstance(data.get("pipeline"), dict):
         raise ValueError(
             "configuration requires [pipeline] and permits "
-            "[camera], [detector], [tracking], [events], [identity], [visitors], [home]"
+            "[camera], [detector], [tracking], [events], [identity], [visitors], [home], "
+            "[audio], [speech], [stt], [tts], [interaction]"
         )
     pipeline = data["pipeline"]
     if set(pipeline) - {"camera_id", "min_person_confidence"}:
@@ -361,6 +373,16 @@ def load_app_config(path: Path) -> AppConfig:
         raise ValueError("unknown setting or invalid table in [visitors]")
     if not isinstance(identity, dict) or set(identity) - set(IdentityConfig.__dataclass_fields__):
         raise ValueError("unknown setting or invalid table in [identity]")
+    for table, schema in (
+        ("audio", AudioConfig),
+        ("speech", SpeechConfig),
+        ("stt", STTConfig),
+        ("tts", TTSConfig),
+        ("interaction", InteractionConfig),
+    ):
+        value = data.get(table, {})
+        if not isinstance(value, dict) or set(value) - set(schema.__dataclass_fields__):
+            raise ValueError(f"unknown setting or invalid table in [{table}]")
     return AppConfig(
         pipeline_config,
         CameraConfig(**camera),
@@ -393,4 +415,9 @@ def load_app_config(path: Path) -> AppConfig:
         IdentityConfig(**identity),
         VisitorConfig(**visitors),
         HomeConfig(**home),
+        AudioConfig(**data.get("audio", {})),
+        SpeechConfig(**data.get("speech", {})),
+        STTConfig(**data.get("stt", {})),
+        TTSConfig(**data.get("tts", {})),
+        InteractionConfig(**data.get("interaction", {})),
     )

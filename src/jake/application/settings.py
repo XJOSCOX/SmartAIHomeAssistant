@@ -87,6 +87,7 @@ def save_config(path: Path, config: AppConfig) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     values = asdict(config)
     values["camera"] = {k: v for k, v in values["camera"].items() if v is not None}
+    values["audio"] = {k: v for k, v in values["audio"].items() if v is not None}
     raw = tomli_w.dumps(values).encode("utf-8")
     fd, temporary_name = tempfile.mkstemp(prefix=".jake-config-", dir=path.parent)
     temporary = Path(temporary_name)
