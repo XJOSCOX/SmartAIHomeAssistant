@@ -63,6 +63,7 @@ class ConversationManager:
         self.config = config
         self.session: ConversationSession | None = None
         self.events: deque[VoiceEvent] = deque(maxlen=128)
+        self.named_in_session = False
 
     def expire(self, at: datetime) -> None:
         if (
@@ -77,10 +78,9 @@ class ConversationManager:
             self.events.append(VoiceEvent("CONVERSATION_ENDED", at, self.session.conversation_id))
             self.session.turns.clear()
             self.session = None
+            self.named_in_session = False
 
-    def respond(
-        self, result: SpeechRecognitionResult, person: VisualPerson | None
-    ) -> SpeechRequest | None:
+    def begin(self, result: SpeechRecognitionResult, person: VisualPerson | None) -> str | None:
         self.expire(result.ended_at)
         text = " ".join(result.text.split())
         if (
@@ -109,19 +109,41 @@ class ConversationManager:
                 )
             )
         self.session.last_activity_at = result.ended_at
-        response = RESPONSES[intent(text)]
+        return text
+
+    def finish(
+        self,
+        conversation_id: str,
+        text: str,
+        response: str,
+        at: datetime,
+    ) -> SpeechRequest | None:
+        if self.session is None or self.session.conversation_id != conversation_id:
+            return None
         self.session.turns.extend((("user", text), ("jake", response)))
         self.events.append(
             VoiceEvent(
                 "SPEECH_RECOGNIZED",
-                result.ended_at,
-                self.session.conversation_id,
-                person.track_id if person else None,
+                at,
+                conversation_id,
+                self.session.association.track_id if self.session.association else None,
             )
         )
         if intent(text) == "GOODBYE":
-            self.end(result.ended_at)
+            self.end(at)
         return SpeechRequest(response)
+
+    def respond(
+        self,
+        result: SpeechRecognitionResult,
+        person: VisualPerson | None,
+    ) -> SpeechRequest | None:
+        text = self.begin(result, person)
+        if text is None or self.session is None:
+            return None
+        return self.finish(
+            self.session.conversation_id, text, RESPONSES[intent(text)], result.ended_at
+        )
 
 
 class GreetingPolicy:

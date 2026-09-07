@@ -144,3 +144,16 @@ greeting_cooldown_minutes = 60
 conversation_timeout_seconds = 60
 visual_context_max_age_seconds = 2
 max_turns = 20
+
+
+# Phase 3B: embedded local LLM, separate opt-in from audio. No runtime downloads.
+[conversation_ai]
+enabled = false
+backend = "llama_cpp"
+model = "models/llm/qwen2.5-1.5b-instruct-q4_k_m.gguf"
+context_tokens = 4096
+max_output_tokens = 96
+temperature = 0.2
+top_p = 0.9
+threads = 4
+timeout_seconds = 20.0

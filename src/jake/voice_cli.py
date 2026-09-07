@@ -3,6 +3,7 @@
 import argparse
 import sys
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 from threading import Event
 
@@ -63,7 +64,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         config = load_app_config(args.config)
         if args.with_camera:
             # Validate before opening audio or loading speech models.
-            configure_perception(config, overrides)
+            config = configure_perception(config, overrides).config
+        else:
+            config = replace(
+                config,
+                identity=replace(config.identity, enabled=False),
+                visitors=replace(config.visitors, enabled=False),
+            )
         voice = compose_voice(config)
         voice.start()
         if args.with_camera:
@@ -75,9 +82,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
                 display = VoicePreview(config.interaction.visual_context_max_age_seconds)
             camera.start()
+        print(f"conversation AI: {'enabled' if config.conversation_ai.enabled else 'disabled'}")
         print("Jake voice active locally; half-duplex. Ctrl+C stops. No transcript logging.")
         delay = Event()
         previous = None
+        previous_ai = None
         while not delay.wait(0.01 if display else 0.25):
             if voice.metrics.input_status.startswith("failed") or camera and camera.error:
                 raise VoiceError(
@@ -99,6 +108,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                     f"TTS={metrics.tts_ms:.1f}ms RTF={metrics.stt_real_time_factor}"
                 )
                 previous = metrics
+            if config.conversation_ai.enabled and voice.ai is not None:
+                ai = voice.ai.metrics
+                diagnostic = (ai, voice.ai_fallback_used)
+                if diagnostic != previous_ai:
+                    print(
+                        f"conversation AI: {ai.state} load={ai.load_ms}ms "
+                        f"LLM latency={ai.generation_ms}ms prompt_tokens={ai.prompt_tokens} "
+                        f"output_tokens={ai.output_tokens} tokens/sec={ai.tokens_per_second} "
+                        f"fallback used: {voice.ai_fallback_used or ai.fallback_used}"
+                    )
+                    previous_ai = diagnostic
             for event in voice.drain_events():
                 print(f"{event.kind} track={event.track_id or 'unresolved'}")
     except KeyboardInterrupt:

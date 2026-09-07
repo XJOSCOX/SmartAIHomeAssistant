@@ -1,10 +1,20 @@
-# Jake â€” SmartAIHomeAssistant
+# Jake - SmartAIHomeAssistant
 
 Jake is the foundation for a privacy-first, local-first smart home AI system.
 The intended system will understand household events locally and eventually
 support natural conversation. **Phase 2D adds opt-in anonymous recurring visitor memory,
 separate from enrolled residents, with encrypted templates and retention controls.
 All tracker modes remain available; track IDs are session-local, not resident identities.**
+
+## Phase 3B contextual conversation
+
+An independently opt-in embedded llama.cpp adapter now interprets bounded multi-turn
+conversation using explicit perception context. Deterministic guards precede the model;
+validated response wording and perception-authorized greeting personalization follow it.
+This phase intentionally uses a small approved response set, not unrestricted model prose.
+See the [contextual conversation guide](docs/contextual-conversation.md) for architecture,
+manual GGUF setup, policy limits and future validation commands. Disabled AI retains
+Phase 3A deterministic behavior. No LLM weights have been downloaded or tested physically.
 
 ## Phase 3A local voice foundation
 

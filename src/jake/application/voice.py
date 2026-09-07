@@ -8,7 +8,17 @@ from queue import Empty, Queue
 from threading import Event, Lock, Thread
 from time import monotonic
 
+from jake.application.conversation_worker import ConversationWorker
 from jake.conversation import ConversationManager, GreetingPolicy, associate
+from jake.conversation_ai_config import ConversationAIConfig
+from jake.conversation_context import (
+    FALLBACK,
+    build_context,
+    personalize,
+    priority_response,
+    validate_response,
+)
+from jake.conversation_domain import ConversationModel, ConversationRequest, SpeakerContext
 from jake.voice_config import AudioConfig, InteractionConfig, SpeechConfig
 from jake.voice_domain import SpeechRequest, SpeechResult, VisualContext, VoiceError, VoiceEvent
 from jake.voice_ports import (
@@ -128,8 +138,22 @@ class VoiceService:
         recognizer: SpeechRecognizer,
         synthesizer: SpeechSynthesizer,
         output: AudioOutput,
+        *,
+        conversation_model: ConversationModel | None = None,
+        conversation_ai: ConversationAIConfig | None = None,
+        timezone: str = "UTC",
+        capabilities: tuple[str, ...] = ("local conversation",),
     ) -> None:
         self.audio, self.speech, self.interaction = audio, speech, interaction
+        ai = conversation_ai or ConversationAIConfig()
+        self.ai = (
+            ConversationWorker(conversation_model, ai.timeout_seconds)
+            if ai.enabled and conversation_model is not None
+            else None
+        )
+        self.timezone, self.capabilities = timezone, capabilities
+        self._pending_ai = False
+        self.ai_fallback_used = False
         self.source, self.recognizer = source, recognizer
         self.segmenter = UtteranceSegmenter(speech, vad)
         self.conversations = ConversationManager(interaction)
@@ -164,6 +188,8 @@ class VoiceService:
         if self._thread is not None or self._cancel.is_set():
             raise VoiceError("Voice sessions are single-use")
         try:
+            if self.ai is not None:
+                self.ai.start()
             self.source.start()
             self.speaker.start()
             self._thread = Thread(target=self._run, name="jake-voice")
@@ -174,12 +200,16 @@ class VoiceService:
 
     def close(self) -> None:
         self._cancel.set()
+        if self.ai is not None:
+            self.ai.model.cancel()
         try:
             self.source.close()
         finally:
             try:
                 self.speaker.close()
             finally:
+                if self.ai is not None:
+                    self.ai.close()
                 if self._thread is not None:
                     self._thread.join()
                 self.segmenter.reset()
@@ -190,14 +220,60 @@ class VoiceService:
                 self.metrics = VoiceMetrics()
                 self.greetings = GreetingPolicy(self.interaction)
 
+    def _finish_ai(
+        self, request: ConversationRequest, generated: str | None, *, guarded: bool = False
+    ) -> None:
+        if self._cancel.is_set():
+            return
+        context = request.context
+        response = (
+            generated
+            if guarded and generated is not None
+            else validate_response(generated or "", request)
+        )
+        self.ai_fallback_used = response == FALLBACK
+        with self._lock:
+            latest = self._context
+        current = associate(
+            latest, datetime.now(UTC), self.interaction.visual_context_max_age_seconds
+        )
+        if (
+            current is None
+            or current.track_id != context.speaker.track_id
+            or current.identity_state != "RESIDENT"
+            or current.resident_id != context.speaker.resident_id
+        ):
+            context = replace(context, speaker=SpeakerContext())
+        personalized = personalize(
+            response, context, already_named=self.conversations.named_in_session
+        )
+        result = self.conversations.finish(
+            request.context.conversation_id, request.text, personalized, request.context.timestamp
+        )
+        if result is not None:
+            if personalized != response:
+                self.conversations.named_in_session = True
+            self.speaker.speak(result.text)
+
     def _run(self) -> None:
         person = None
+        utterance_context: VisualContext | None = None
+        utterance_at = datetime.now(UTC)
         completed = 0
         self.metrics = VoiceMetrics(input_status="listening")
         try:
             while not self._cancel.is_set():
                 now = datetime.now(UTC)
                 self.conversations.expire(now)
+                if self.ai is not None:
+                    if self._pending_ai and self.conversations.session is None:
+                        self.ai.cancel_active()
+                    outcome = self.ai.poll()
+                    if outcome is not None:
+                        self._pending_ai = False
+                        self._finish_ai(
+                            outcome.request, outcome.response.text if outcome.response else None
+                        )
                 while self.conversations.events:
                     self._emit(self.conversations.events.popleft())
                 if self.speaker.error:
@@ -220,7 +296,7 @@ class VoiceService:
                     continue
                 with self._lock:
                     context = self._context
-                if self.segmenter.state == "IDLE" and context:
+                if self.segmenter.state == "IDLE" and context and not self._pending_ai:
                     for greeting in self.greetings.observe(context, now):
                         self.speaker.speak(greeting.text)
                     if self.speaker.is_speaking:
@@ -235,6 +311,11 @@ class VoiceService:
                     continue
                 segment = self.segmenter.push(chunk)
                 if self.segmenter.started_this_chunk:
+                    if self.ai is not None:
+                        with self._lock:
+                            context = self._context
+                    utterance_context = context
+                    utterance_at = chunk.started_at
                     person = associate(
                         context, chunk.started_at, self.interaction.visual_context_max_age_seconds
                     )
@@ -246,6 +327,10 @@ class VoiceService:
                         )
                     )
                 self.metrics = replace(self.metrics, vad_state=self.segmenter.state)
+                if segment is not None and self._pending_ai:
+                    # VAD continues, but no second STT/LLM request queues behind active reasoning.
+                    del segment
+                    continue
                 if segment is not None:
                     self.metrics = replace(
                         self.metrics,
@@ -262,10 +347,39 @@ class VoiceService:
                         stt_real_time_factor=result.processing_ms / 1000 / segment.duration_seconds,
                         vad_state="IDLE",
                     )
-                    response = self.conversations.respond(result, person)
-                    if response is not None:
-                        self.speaker.speak(response.text)
-                    del result, response, segment
+                    if self.ai is None:
+                        response = self.conversations.respond(result, person)
+                        if response is not None:
+                            self.speaker.speak(response.text)
+                        del response
+                    else:
+                        text = self.conversations.begin(result, person)
+                        session = self.conversations.session
+                        if text is not None and session is not None:
+                            request = ConversationRequest(
+                                build_context(
+                                    session.conversation_id,
+                                    result.ended_at,
+                                    person,
+                                    utterance_context,
+                                    tuple(session.turns),
+                                    timezone=self.timezone,
+                                    max_age=self.interaction.visual_context_max_age_seconds,
+                                    supported=self.capabilities,
+                                    association_at=utterance_at,
+                                ),
+                                text,
+                            )
+                            guarded = priority_response(text)
+                            if guarded is not None:
+                                self._finish_ai(request, guarded, guarded=True)
+                            else:
+                                self._pending_ai = self.ai.submit(request)
+                                if not self._pending_ai:
+                                    self._finish_ai(request, None)
+                            del request
+                        del text, session
+                    del result, segment
         except Exception as exc:
             self.metrics = replace(self.metrics, input_status="failed:" + type(exc).__name__)
             self._cancel.set()

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from math import isfinite
 from pathlib import Path
 
+from jake.conversation_ai_config import ConversationAIConfig
 from jake.home_config import HomeConfig
 from jake.identity_config import IdentityConfig
 from jake.visitor_config import VisitorConfig
@@ -256,6 +257,7 @@ class AppConfig:
     stt: STTConfig = STTConfig()
     tts: TTSConfig = TTSConfig()
     interaction: InteractionConfig = InteractionConfig()
+    conversation_ai: ConversationAIConfig = ConversationAIConfig()
 
 
 def load_config(path: Path) -> PipelineConfig:
@@ -285,11 +287,12 @@ def load_app_config(path: Path) -> AppConfig:
         "stt",
         "tts",
         "interaction",
+        "conversation_ai",
     } or not isinstance(data.get("pipeline"), dict):
         raise ValueError(
             "configuration requires [pipeline] and permits "
             "[camera], [detector], [tracking], [events], [identity], [visitors], [home], "
-            "[audio], [speech], [stt], [tts], [interaction]"
+            "[audio], [speech], [stt], [tts], [interaction], [conversation_ai]"
         )
     pipeline = data["pipeline"]
     if set(pipeline) - {"camera_id", "min_person_confidence"}:
@@ -379,6 +382,7 @@ def load_app_config(path: Path) -> AppConfig:
         ("stt", STTConfig),
         ("tts", TTSConfig),
         ("interaction", InteractionConfig),
+        ("conversation_ai", ConversationAIConfig),
     ):
         value = data.get(table, {})
         if not isinstance(value, dict) or set(value) - set(schema.__dataclass_fields__):
@@ -420,4 +424,5 @@ def load_app_config(path: Path) -> AppConfig:
         STTConfig(**data.get("stt", {})),
         TTSConfig(**data.get("tts", {})),
         InteractionConfig(**data.get("interaction", {})),
+        ConversationAIConfig(**data.get("conversation_ai", {})),
     )
