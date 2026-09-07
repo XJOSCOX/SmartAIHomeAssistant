@@ -14,7 +14,10 @@ validated response wording and perception-authorized greeting personalization fo
 This phase intentionally uses a small approved response set, not unrestricted model prose.
 See the [contextual conversation guide](docs/contextual-conversation.md) for architecture,
 manual GGUF setup, policy limits and future validation commands. Disabled AI retains
-Phase 3A deterministic behavior. No LLM weights have been downloaded or tested physically.
+Phase 3A deterministic behavior. Use `jake-voice --config config/local.toml
+--test-conversation-model` for a fixed model-only health probe, with no microphone or
+camera. Loading has its own deadline; recoverable request failures can retry after cleanup.
+No LLM weights have been downloaded or tested physically.
 
 ## Phase 3A local voice foundation
 

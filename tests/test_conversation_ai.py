@@ -216,7 +216,15 @@ class Model:
     def status(self) -> ModelStatus:
         return ModelStatus("ready", 3)
 
-    def generate(self, request: ConversationRequest) -> ConversationResponse:
+    def load(self) -> None:
+        pass
+
+    def cancel_current(self) -> None:
+        self.cancelled.set()
+
+    def generate(
+        self, request: ConversationRequest, *, cancel: Event | None = None
+    ) -> ConversationResponse:
         self.requests.append(request)
         self.entered.set()
         if self.block:
@@ -237,6 +245,7 @@ def test_worker_generation_and_failure(fail: bool) -> None:
     model = Model(fail=fail)
     worker = ConversationWorker(model, 2)
     worker.start()
+    until(lambda: worker.metrics.state == "ready")
     try:
         assert worker.submit(request())
         assert not worker.submit(request())
@@ -260,15 +269,18 @@ def test_timeout_cancels_and_stays_bounded() -> None:
     model = Model(block=True)
     worker = ConversationWorker(model, 0.01)
     worker.start()
+    until(lambda: worker.metrics.state == "ready")
     try:
         assert worker.submit(request())
         assert model.entered.wait(1)
         sleep(0.02)
         result = worker.poll()
         assert result is not None and result.response is None
-        assert worker.metrics.state == "timeout"
+        assert worker.metrics.last_error_code == "GENERATION_TIMEOUT"
         assert model.cancelled.is_set()
-        assert not worker.submit(request())
+        until(lambda: worker.poll() is None and worker.metrics.state == "ready")
+        model.block = False
+        assert worker.submit(request())
     finally:
         worker.close()
 
@@ -507,5 +519,52 @@ def test_expiry_cancels_pending_generation_without_speaking() -> None:
         assert model.cancelled.wait(2)
         until(lambda: service.conversations.session is None)
         assert not said
+    finally:
+        service.close()
+
+
+def test_loading_response_does_not_fail_backend() -> None:
+    class SlowModel(Model):
+        def __init__(self) -> None:
+            super().__init__()
+            self.loaded = Event()
+
+        def load(self) -> None:
+            assert self.loaded.wait(3)
+
+    model = SlowModel()
+    service, source, said = make_service(model, timeout=0.1)
+    service.start()
+    try:
+        feed(service, source)
+        until(lambda: bool(said))
+        assert said == ["I'm still starting up."]
+        assert service.ai is not None and service.ai.metrics.state == "loading"
+        assert not model.requests
+        model.loaded.set()
+        until(lambda: service.ai is not None and service.ai.metrics.state == "ready")
+        sleep(0.08)
+        feed(service, source)
+        until(lambda: len(said) == 2)
+        assert said[1].startswith("Hello Joseph")
+    finally:
+        model.loaded.set()
+        service.close()
+
+
+def test_policy_rejection_allows_next_voice_request() -> None:
+    model = Model("Joseph is home.")
+    service, source, said = make_service(model)
+    service.start()
+    try:
+        feed(service, source)
+        until(lambda: bool(said))
+        assert said == [FALLBACK]
+        assert service.ai is not None and service.ai.metrics.last_error_code == "POLICY_REJECTED"
+        model.text = BASE_REPLIES[0]
+        sleep(0.08)
+        feed(service, source)
+        until(lambda: len(said) == 2)
+        assert said[1].startswith("Hello Joseph")
     finally:
         service.close()

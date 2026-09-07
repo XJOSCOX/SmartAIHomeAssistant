@@ -30,7 +30,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.add_argument(f"--{feature}", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--tracker", choices=("kalman", "kalman-baseline", "iou"))
     parser.add_argument("--assignment", choices=("greedy", "hungarian"))
+    parser.add_argument(
+        "--test-conversation-model",
+        action="store_true",
+        help="Test a fixed local model prompt without audio/camera",
+    )
     args = parser.parse_args(argv)
+    if args.test_conversation_model and (args.with_camera or args.preview or args.list_devices):
+        parser.error("--test-conversation-model cannot be combined with device/camera modes")
     if args.preview and not args.with_camera:
         parser.error("--preview requires --with-camera")
     if not args.with_camera and any(
@@ -49,6 +56,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     voice = camera = None
     display = None
     try:
+        if args.test_conversation_model:
+            from jake.application.conversation_health import test_model
+
+            return test_model(load_app_config(args.config).conversation_ai)
         if args.list_devices:
             from jake.adapters.sounddevice_audio import devices
 
@@ -116,7 +127,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                         f"conversation AI: {ai.state} load={ai.load_ms}ms "
                         f"LLM latency={ai.generation_ms}ms prompt_tokens={ai.prompt_tokens} "
                         f"output_tokens={ai.output_tokens} tokens/sec={ai.tokens_per_second} "
-                        f"fallback used: {voice.ai_fallback_used or ai.fallback_used}"
+                        f"fallback used: {voice.ai_fallback_used or ai.fallback_used} "
+                        f"last_error_code={ai.last_error_code or 'NONE'}"
                     )
                     previous_ai = diagnostic
             for event in voice.drain_events():

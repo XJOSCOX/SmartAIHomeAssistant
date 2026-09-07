@@ -156,4 +156,5 @@ max_output_tokens = 96
 temperature = 0.2
 top_p = 0.9
 threads = 4
-timeout_seconds = 20.0
+load_timeout_seconds = 120.0
+generation_timeout_seconds = 30.0

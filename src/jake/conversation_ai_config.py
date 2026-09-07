@@ -15,7 +15,18 @@ class ConversationAIConfig:
     temperature: float = 0.2
     top_p: float = 0.9
     threads: int = 4
-    timeout_seconds: float = 20.0
+    # Legacy alias: when supplied, applies only to generation.
+    timeout_seconds: float | None = None
+    load_timeout_seconds: float = 120.0
+    generation_timeout_seconds: float = 30.0
+
+    @property
+    def generation_timeout(self) -> float:
+        return (
+            self.timeout_seconds
+            if self.timeout_seconds is not None
+            else self.generation_timeout_seconds
+        )
 
     def __post_init__(self) -> None:
         if type(self.enabled) is not bool or self.backend != "llama_cpp":
@@ -32,4 +43,7 @@ class ConversationAIConfig:
         integer(self.threads, "conversation threads", 1, 32)
         number(self.temperature, "temperature", 0, 1)
         number(self.top_p, "top_p", 0.01, 1)
-        number(self.timeout_seconds, "conversation timeout", 0.1, 120)
+        if self.timeout_seconds is not None:
+            number(self.timeout_seconds, "conversation timeout", 0.1, 120)
+        number(self.load_timeout_seconds, "model load timeout", 0.1, 600)
+        number(self.generation_timeout_seconds, "generation timeout", 0.1, 120)

@@ -147,7 +147,11 @@ class VoiceService:
         self.audio, self.speech, self.interaction = audio, speech, interaction
         ai = conversation_ai or ConversationAIConfig()
         self.ai = (
-            ConversationWorker(conversation_model, ai.timeout_seconds)
+            ConversationWorker(
+                conversation_model,
+                ai.generation_timeout,
+                load_timeout_seconds=ai.load_timeout_seconds,
+            )
             if ai.enabled and conversation_model is not None
             else None
         )
@@ -232,6 +236,8 @@ class VoiceService:
             else validate_response(generated or "", request)
         )
         self.ai_fallback_used = response == FALLBACK
+        if self.ai is not None and generated is not None and not guarded and response == FALLBACK:
+            self.ai.note_policy_rejection()
         with self._lock:
             latest = self._context
         current = associate(
@@ -376,7 +382,12 @@ class VoiceService:
                             else:
                                 self._pending_ai = self.ai.submit(request)
                                 if not self._pending_ai:
-                                    self._finish_ai(request, None)
+                                    if self.ai.metrics.state == "loading":
+                                        self._finish_ai(
+                                            request, "I'm still starting up.", guarded=True
+                                        )
+                                    else:
+                                        self._finish_ai(request, None)
                             del request
                         del text, session
                     del result, segment

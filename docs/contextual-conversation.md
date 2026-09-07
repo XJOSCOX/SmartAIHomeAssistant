@@ -39,11 +39,11 @@ STT result -> ConversationManager.begin
 
 - `conversation_domain.py`: immutable ConversationContext, ConversationRequest,
   ConversationResponse, SpeakerContext, ScenePerson and ModelStatus; ConversationModel
-  protocol with generate/cancel/status/close. No model vendor appears in these contracts.
+  protocol with load/generate/cancel_current/cancel/status/close. No model vendor appears in these contracts.
 - `conversation_context.py`: context assembly, central prompt construction, capability
   catalogue, deterministic precedence, response validation and greeting personalization.
 - `conversation_ai_config.py`: strict, independent opt-in configuration.
-- `adapters/llama_conversation.py`: lazy embedded GGUF load, token budgeting, schema
+- `adapters/llama_conversation.py`: explicit worker-owned GGUF load, token budgeting, schema
   constrained generation, cancellation hook, native metrics and state cleanup.
 - `application/conversation_worker.py`: one active generation and bounded handoff.
 - Existing ConversationManager retains session IDs, expiry and memory-only turns.
@@ -82,11 +82,12 @@ escapes control characters and chat-delimiter angle brackets. User text and name
 remain data, not trusted instructions; output enforcement does not depend on escaping
 alone. Prompts and raw responses are not logged.
 
-The backend counts prompt-section tokens with its own tokenizer and reserves space
-for chat-template overhead and output. It drops the oldest history exchanges when
-needed. If the current request still cannot fit, generation fails safely. No persistent
-summary is created. The backend's returned usage, rather than that budgeting estimate,
-is used for reported prompt/output token counts.
+The backend renders the GGUF's own chat template and counts that exact prompt with
+its tokenizer, reserving the configured output budget. It drops oldest history
+exchanges if needed, and reports CONTEXT_OVERFLOW if the remaining request cannot
+fit. The same formatter is installed as the native chat handler; no fallback to an
+unrelated template occurs. Returned native usage supplies reported token counts.
+
 
 ## Deterministic precedence and policy
 
@@ -118,20 +119,27 @@ unbounded utterance queue exists. VAD continues during generation, but additiona
 completed utterances are discarded until the answer is ready. This phase has no
 barge-in. Existing half-duplex TTS suppression remains unchanged.
 
-Model load is lazy, on the first non-guarded request. The default 20-second request
-budget includes first load. Generation errors and timeouts return `I'm having trouble
-answering that right now.` Subsequent unguarded requests use the fallback after a
-backend failure/timeout; restart is required to retry the model. Deterministic guards
-remain available. Rejected wording also falls back, without necessarily disabling
-the otherwise healthy backend.
+Model loading starts asynchronously when the worker starts, before any user request.
+The default load deadline is 120 seconds; the independent generation deadline is
+30 seconds and starts only when the owner begins a request. While loading,
+unguarded utterances receive `I'm still starting up.` without failing the backend.
+Deterministic privacy/action guards remain active. Audio/camera initialization does
+not wait for GGUF loading.
 
-Cancellation is terminal for an adapter instance, avoiding races that would clear an
-in-flight cancellation signal. Shutdown cancels generation and joins the owner before
-closing the native model. Cancellation is checked through llama.cpp's supported logits
-processor hook and around load/prompt operations. Native loading or prompt evaluation
-may finish its current operation before stopping; this is cooperative cancellation,
-not a promise of hard preemption. Timeout can deliver a fallback while native work is
-finishing, without starting another generation.
+Missing files, import/load/template/schema failures and reset failures make the
+backend unavailable until restart. A generation timeout, malformed JSON, rejected
+reply, context overflow or generation error is recoverable after the owner finishes
+and native reset succeeds. The same generic spoken fallback remains privacy-safe;
+metadata codes explain the difference. No new request can overlap an operation
+that is still unwinding after timeout.
+
+Per-generation cancellation uses its own event; shutdown uses a separate terminal
+signal. Timeout or conversation expiry cancels only the current generation. The
+native owner resets state before allowing another request. All native load, inference,
+reset and close calls occur on the owner thread. A failed reset marks the backend
+unavailable. Native load or prompt evaluation may finish its current operation before
+stopping; deadlines are observable, not hard native preemption. Shutdown waits for
+that operation to return and closes the model on the same thread.
 
 The existing conversation timeout clears manager history. If expiry occurs during
 inference, active generation is cancelled and its response cannot attach to a new
@@ -143,7 +151,8 @@ Memory cleanup is not a guarantee of secure erasure from native/OS memory.
 ## Metrics and safe diagnostics
 
 The CLI prints AI enabled/disabled, worker state, load milliseconds, generation
-milliseconds, backend prompt/output token counts, tokens/sec and fallback-used status.
+milliseconds, backend prompt/output token counts, tokens/sec, fallback-used status
+and a typed `last_error_code`. Exception messages, prompts and transcripts are never logged.
 Missing metrics are `None`, never invented zero counts or rates. Generation latency
 includes prompt preparation/evaluation and output generation, excluding model load;
 a failed request's latency is elapsed request time. Load time is reported separately.
@@ -230,7 +239,8 @@ max_output_tokens = 96
 temperature = 0.2
 top_p = 0.9
 threads = 4
-timeout_seconds = 20.0
+load_timeout_seconds = 120.0
+generation_timeout_seconds = 30.0
 ```
 
 The repository example defaults `enabled = false`. `[audio] enabled = true` remains
@@ -271,3 +281,80 @@ Final validation: **838 tests passed, 93% total coverage**; Ruff check, format c
 (125 files), mypy, and source/wheel package build passed. The existing Phase 3A suite
 remains included. Runtime verification was limited to installation/import/API signatures;
 no real LLM, microphone, speaker, camera or biometric-store test was performed.
+
+
+## Runtime recovery and model-only health command
+
+```powershell
+uv run --extra voice jake-voice --config config/local.toml --test-conversation-model
+```
+
+This explicit probe does not require audio.enabled or conversation_ai.enabled. It
+loads the configured local model, checks the GGUF template, generates one fixed
+internal `Hello.` request, validates JSON/schema and the unchanged allowed-reply
+policy, reports token/timing metadata and unloads. It accepts no arbitrary prompt
+and never composes microphone, camera, STT, TTS, residents or visitor stores. Exit
+status is 0 for READY, 1 for a model failure and 130 for interruption. It prints no
+prompt or reply text. The optional native conversation runtime must already be installed.
+
+The normal standalone voice command remains:
+
+```powershell
+uv run --extra voice jake-voice --config config/local.toml
+```
+
+Integrated flags and policy/identity behavior are unchanged. Full voice testing
+remains deferred until repository review.
+
+Legacy `conversation_ai.timeout_seconds` remains accepted as a generation-only alias.
+It never limits model loading. If both the legacy alias and the new generation field
+are supplied, the legacy alias takes precedence; remove it to use the new field.
+Existing config serialization preserves this behavior and omits null aliases. Defaults
+are 120 seconds for load and 30 for generation; existing explicit 20-second configs
+retain 20 seconds for generation.
+
+Safe error categories:
+
+| Code | Behavior |
+| --- | --- |
+| MODEL_NOT_FOUND | Configured GGUF is absent; unavailable until restart |
+| BACKEND_IMPORT_FAILED | Optional native runtime cannot import; unavailable |
+| MODEL_LOAD_FAILED / MODEL_LOAD_TIMEOUT | Initialization failed/exceeded its own budget; unavailable |
+| CHAT_TEMPLATE_FAILED | Missing/invalid GGUF template or rendering failure; unavailable |
+| SCHEMA_FAILED | Enum grammar compilation failed; unavailable, no generic-JSON fallback |
+| CONTEXT_OVERFLOW / TOKEN_BUDGET_FAILED | Request rejected; later requests may retry |
+| GENERATION_TIMEOUT / GENERATION_FAILED | Retry after current operation returns and reset succeeds |
+| INVALID_JSON / INVALID_REPLY / POLICY_REJECTED | Safe fallback; healthy model remains reusable |
+| CANCELLED | Current request cancelled; shutdown cancellation is separately terminal |
+| RESET_FAILED | Native reset/teardown failed; unavailable |
+
+States exposed by the worker are disabled, loading, ready, generating, failed and
+closed. A recoverable error can remain in last_error_code while state returns to
+ready; successful generation clears it. During timeout cleanup state remains
+generating, correctly indicating the occupied native slot.
+
+Review findings: the old implementation combined lazy loading with a request deadline,
+permanently disabled the backend after any failure, made cancellation terminal, and
+removed useful exception categories. In this checkout the configured GGUF path is
+also absent. The new health command reported MODEL_NOT_FOUND without touching devices
+or stores. No weights were downloaded and that asset-path condition was not silently
+changed.
+
+Compatibility review used the installed llama-cpp-python 0.3.35 source. Its
+response_format JSON-schema helper supports enum schemas, but can fall back to generic
+JSON on compiler failure. Jake now calls LlamaGrammar.from_json_schema explicitly and
+passes the compiled grammar to create_chat_completion, keeping final JSON and policy
+validation. The exact enum grammar compiled successfully in 0.3.35. The
+[published Qwen2.5 tokenizer template](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct/raw/main/tokenizer_config.json)
+also rendered successfully with its Jinja2ChatFormatter using a fixed internal message.
+That check retrieved only public tokenizer metadata, not weights. Actual GGUF inference
+could not be validated here because the configured file is missing; template/grammar
+checks alone are not a model generation benchmark.
+
+Runtime recovery validation: **857 tests passed; 93% coverage**, with Ruff, format
+check, mypy and source/wheel build passing. New files are
+`application/conversation_health.py` and `tests/test_conversation_runtime.py`;
+lifecycle, config, adapter, voice diagnostics and existing tests were updated.
+No full voice pipeline, physical devices, real biometric stores or GGUF inference
+were used during this fix. The standalone health probe returned MODEL_NOT_FOUND
+for this checkout's current local configuration.

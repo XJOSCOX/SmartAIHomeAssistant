@@ -2,6 +2,8 @@
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import StrEnum
+from threading import Event
 from typing import Protocol
 
 
@@ -60,15 +62,60 @@ class ConversationResponse:
     tokens_per_second: float | None = None
 
 
+class ConversationErrorCode(StrEnum):
+    MODEL_NOT_FOUND = "MODEL_NOT_FOUND"
+    BACKEND_IMPORT_FAILED = "BACKEND_IMPORT_FAILED"
+    MODEL_LOAD_FAILED = "MODEL_LOAD_FAILED"
+    MODEL_LOAD_TIMEOUT = "MODEL_LOAD_TIMEOUT"
+    MODEL_NOT_READY = "MODEL_NOT_READY"
+    CHAT_TEMPLATE_FAILED = "CHAT_TEMPLATE_FAILED"
+    CONTEXT_OVERFLOW = "CONTEXT_OVERFLOW"
+    TOKEN_BUDGET_FAILED = "TOKEN_BUDGET_FAILED"
+    GENERATION_TIMEOUT = "GENERATION_TIMEOUT"
+    GENERATION_FAILED = "GENERATION_FAILED"
+    INVALID_JSON = "INVALID_JSON"
+    INVALID_REPLY = "INVALID_REPLY"
+    POLICY_REJECTED = "POLICY_REJECTED"
+    CANCELLED = "CANCELLED"
+    RESET_FAILED = "RESET_FAILED"
+    SCHEMA_FAILED = "SCHEMA_FAILED"
+
+
+class ConversationFailure(RuntimeError):
+    """Only enum metadata is retained; never wrap unsafe native exception payloads."""
+
+    def __init__(self, code: ConversationErrorCode) -> None:
+        self.code = code
+        super().__init__(code.value)
+
+    @property
+    def permanent(self) -> bool:
+        return self.code in {
+            ConversationErrorCode.MODEL_NOT_FOUND,
+            ConversationErrorCode.BACKEND_IMPORT_FAILED,
+            ConversationErrorCode.MODEL_LOAD_FAILED,
+            ConversationErrorCode.MODEL_LOAD_TIMEOUT,
+            ConversationErrorCode.CHAT_TEMPLATE_FAILED,
+            ConversationErrorCode.RESET_FAILED,
+            ConversationErrorCode.SCHEMA_FAILED,
+        }
+
+
 @dataclass(frozen=True, slots=True)
 class ModelStatus:
     state: str = "not_loaded"
     load_ms: float | None = None
+    last_error_code: ConversationErrorCode | None = None
+    chat_template_ok: bool = False
 
 
 class ConversationModel(Protocol):
     @property
     def status(self) -> ModelStatus: ...
-    def generate(self, request: ConversationRequest) -> ConversationResponse: ...
+    def load(self) -> None: ...
+    def generate(
+        self, request: ConversationRequest, *, cancel: Event | None = None
+    ) -> ConversationResponse: ...
+    def cancel_current(self) -> None: ...
     def cancel(self) -> None: ...
     def close(self) -> None: ...
