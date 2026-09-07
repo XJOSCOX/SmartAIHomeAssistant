@@ -1,11 +1,13 @@
 """Optional face stage, separate from perception events and body tracking."""
 
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime
 
 from jake.domain import Frame, FrameContext, PersonTrack
 from jake.identity import CosineIdentityMatcher, TemporalIdentity, face_cosine
 from jake.identity_config import IdentityConfig
+from jake.identity_diagnostics import IdentityDiagnostic, MatchDiagnostic
 from jake.identity_domain import (
     FaceDetection,
     FaceEmbedding,
@@ -51,6 +53,14 @@ class FaceIdentityService:
         self.visitor_resident_evidence: dict[str, ResidentEvidence] = {}
         self.visitor_diagnostics: dict[str, str] = {}
         self.face_qualities: dict[str, FaceQuality] = {}
+        self._diagnostics: tuple[IdentityDiagnostic, ...] = ()
+
+    @property
+    def profile_count(self) -> int:
+        return len(self.profiles)
+
+    def diagnostics(self) -> tuple[IdentityDiagnostic, ...]:
+        return self._diagnostics
 
     def process(
         self, frame: Frame, tracks: tuple[PersonTrack, ...]
@@ -64,6 +74,8 @@ class FaceIdentityService:
         self._attempts = {
             k: v for k, v in self._attempts.items() if any(t.track_id == k for t in tracks)
         }
+        face_confidences: dict[str, float] = {}
+        match_diagnostics: dict[str, MatchDiagnostic] = {}
         faces = []
         for track in tracks:
             if not track.confirmed or not track.visible:
@@ -71,14 +83,18 @@ class FaceIdentityService:
                 continue
             last = self._attempts.get(track.track_id)
             if last and (now - last).total_seconds() < self.config.observation_interval_seconds:
+                self.visitor_diagnostics[track.track_id] = "waiting for observation interval"
                 continue
             self._attempts[track.track_id] = now
             detected = self.detector.detect(frame, track.box)
             if len(detected) == 1:
                 faces.append((track.track_id, detected[0]))
+                face_confidences[track.track_id] = detected[0].confidence
             else:
                 self.visitor_diagnostics[track.track_id] = (
-                    f"rejected face count {len(detected)} (requires one)"
+                    "no face detected"
+                    if not detected
+                    else f"rejected face count {len(detected)} (requires one)"
                 )
         observations = {}
         for track_id, face in faces:
@@ -100,6 +116,11 @@ class FaceIdentityService:
             if quality.accepted:
                 embedding = self.encoder.encode(frame, face)
                 observations[track_id] = self.matcher.match(embedding, self.profiles)
+                match_diagnostics[track_id] = (
+                    self.matcher.diagnostic
+                    if isinstance(self.matcher, CosineIdentityMatcher)
+                    else MatchDiagnostic("matcher observation", observations[track_id].similarity)
+                )
                 if self.collect_visitors:
                     # UNKNOWN from an ambiguous resident match is NOT non-resident evidence.
                     if not self.confidently_nonresident(embedding):
@@ -122,6 +143,54 @@ class FaceIdentityService:
                         self.visitor_observations[track_id] = VisitorObservation(
                             embedding, face.confidence
                         )
-        return self.temporal.update(
+        matches, events = self.temporal.update(
             FrameContext(frame.camera_id, frame.sequence, frame.captured_at), tracks, observations
         )
+        temporal = self.temporal.diagnostics()
+        previous = {d.track_id: d for d in self._diagnostics}
+        self._diagnostics = tuple(
+            IdentityDiagnostic(
+                track.track_id,
+                matches[track.track_id],
+                match_diagnostics[track.track_id].similarity
+                if track.track_id in match_diagnostics
+                else matches[track.track_id].similarity,
+                match_diagnostics[track.track_id].reason
+                if track.track_id in match_diagnostics
+                else self.visitor_diagnostics[track.track_id],
+                self.face_qualities[track.track_id].summary
+                if track.track_id in self.face_qualities
+                else self.visitor_diagnostics[track.track_id],
+                self.face_qualities[track.track_id].face_width_px
+                if track.track_id in self.face_qualities
+                else None,
+                self.face_qualities[track.track_id].face_height_px
+                if track.track_id in self.face_qualities
+                else None,
+                face_confidences.get(track.track_id),
+                temporal[track.track_id],
+            )
+            for track in tracks
+            if track.visible and track.confirmed
+        )
+        # Keep the latest measured face metadata readable between scheduled observations.
+        # Temporal age/state remains current; never present a previous crop as a new sample.
+        self._diagnostics = tuple(
+            replace(
+                d,
+                face_summary="last observation: "
+                + previous[d.track_id].face_summary.removeprefix("last observation: "),
+                face_width_px=previous[d.track_id].face_width_px,
+                face_height_px=previous[d.track_id].face_height_px,
+                detector_confidence=previous[d.track_id].detector_confidence,
+                similarity=previous[d.track_id].similarity,
+                reason=previous[d.track_id].reason.removesuffix(
+                    " (waiting for observation interval)"
+                )
+                + " (waiting for observation interval)",
+            )
+            if d.reason == "waiting for observation interval" and d.track_id in previous
+            else d
+            for d in self._diagnostics
+        )
+        return matches, events

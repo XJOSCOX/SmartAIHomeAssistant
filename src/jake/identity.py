@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from jake.domain import FrameContext, PersonTrack
 from jake.identity_config import IdentityConfig
+from jake.identity_diagnostics import MatchDiagnostic, TemporalDiagnostic
 from jake.identity_domain import (
     FaceEmbedding,
     FaceQuality,
@@ -37,6 +38,11 @@ def face_cosine(a: FaceEmbedding, b: FaceEmbedding) -> float:
 class CosineIdentityMatcher:
     def __init__(self, config: IdentityConfig) -> None:
         self.config = config
+        self._diagnostic = MatchDiagnostic("not observed")
+
+    @property
+    def diagnostic(self) -> MatchDiagnostic:
+        return self._diagnostic
 
     def match(
         self, embedding: FaceEmbedding, profiles: tuple[ResidentProfile, ...]
@@ -46,10 +52,24 @@ class CosineIdentityMatcher:
             key=lambda item: (-item[0], item[1].resident_id),
         )
         if not scores or scores[0][0] < self.config.candidate_similarity:
+            self._diagnostic = MatchDiagnostic(
+                "no resident profiles loaded"
+                if not scores
+                else f"similarity below candidate threshold {self.config.candidate_similarity:.2f}",
+                scores[0][0] if scores else None,
+            )
             return IdentityMatch(IdentityState.UNKNOWN)
         score, profile = scores[0]
         if len(scores) > 1 and score - scores[1][0] < self.config.ambiguity_margin:
+            self._diagnostic = MatchDiagnostic(
+                f"ambiguous resident match; margin < {self.config.ambiguity_margin:.2f}", score
+            )
             return IdentityMatch(IdentityState.UNKNOWN)
+        self._diagnostic = MatchDiagnostic(
+            "candidate; resident support requires similarity >= "
+            f"{self.config.resident_similarity:.2f}",
+            score,
+        )
         # A single embedding is only ever a candidate, even above resident threshold.
         return IdentityMatch(
             IdentityState.CANDIDATE, profile.resident_id, profile.display_name, score
@@ -132,6 +152,24 @@ class TemporalIdentity:
         self.config = config
         self._state: dict[str, _Evidence] = {}
         self._last: FrameContext | None = None
+
+    def diagnostics(self) -> dict[str, TemporalDiagnostic]:
+        """Copy current evidence metadata without mutating or extending support."""
+        if self._last is None:
+            return {}
+        now = self._last.captured_at.astimezone(UTC)
+        return {
+            key: TemporalDiagnostic(
+                self.config.required_confirmations,
+                sum(
+                    (now - t).total_seconds() <= self.config.confirmation_window_seconds
+                    for t in state.support
+                ),
+                self.config.confirmation_window_seconds,
+                (now - state.last_valid).total_seconds() if state.last_valid else None,
+            )
+            for key, state in self._state.items()
+        }
 
     def update(
         self,

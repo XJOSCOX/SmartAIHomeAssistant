@@ -347,3 +347,54 @@ reaches the bridge and preview. They also cover disabled identity and explicit
 overrides, common CLI configuration, resident-first visitor support and all tracker
 modes. Existing multi-person unresolved and single-camera tests remain in the suite.
 No physical camera, microphone or real biometric store was accessed for this fix.
+
+
+## Phase 3A.2 identity diagnostics
+
+The integrated preview now includes a separate identity diagnostics panel for each
+visible confirmed track. It consumes immutable metadata from the same face stage;
+there is no second face detector, encoder or matcher invocation. No thresholds,
+recognition decisions, stores or voice association policies were changed.
+
+The panel reports identity state, candidate/resident display name, actual cosine
+similarity (not probability), measured face dimensions and quality summary, detector
+confidence when a single face was observed, and a diagnostic reason. Reasons distinguish
+no face, multiple faces, overlapping crops, low detector confidence, size/blur/pose
+rejection, missing profiles, below-candidate similarity, ambiguous resident matches,
+and candidate evidence awaiting temporal confirmation. Model-specific diagnostics
+unavailable from a replaceable matcher are labeled generically instead of fabricated.
+
+TemporalIdentity exposes a read-only copy of metadata: support count within the
+configured confirmation window, required support, window length, and frame-timeline
+age since the last quality-approved matcher observation (including UNKNOWN results).
+A candidate below the resident threshold contributes zero resident confirmation
+support. RESIDENT can remain carried even as support ages out; diagnostics do not
+change the existing carry/verification policy. The reason describes the latest
+matcher observation, whereas the identity state reflects temporal verification.
+Between scheduled samples, retained crop metadata is explicitly labeled `last
+observation`; skipped samples are not counted as new evidence. No embeddings or
+resident templates are present in the diagnostic objects or panel.
+
+Startup prints `Resident profiles loaded: N` after the session loads its store.
+The count stays visible in the preview. Disabled identity is explicitly labeled,
+rather than misrepresented as an empty store. Profiles remain a session snapshot;
+changes from enrollment require restarting the identity session, as before.
+
+Store-path inspection found no inconsistent resolution: enrollment and both camera
+runtimes pass the same `identity.store_path` into `LocalIdentityStore`, whose existing
+constructor makes it absolute against the working directory. Tests cover relative
+and absolute paths through all three entry points with the real path constructor,
+without accessing real stores or keys. Relative paths are **not config-directory
+relative**. Use the same config and working directory, or an absolute path, to select
+the same store. No migration or path rewrite was necessary.
+
+No root cause for the live UNKNOWN observation has been established without its
+face evidence. These diagnostics expose the missing evidence before any threshold
+changes are considered. Repository tests use synthetic profiles and fake devices;
+no physical testing is requested before review.
+
+Exact future command (diagnostics are included with the preview):
+
+```powershell
+uv run --extra voice --extra detection --extra appearance --extra identity jake-voice --config config/local.toml --with-camera --preview --tracker kalman --assignment hungarian --appearance --reid --identity --visitors
+```

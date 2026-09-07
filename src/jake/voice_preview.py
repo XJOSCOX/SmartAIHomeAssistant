@@ -2,12 +2,14 @@
 
 from contextlib import suppress
 from datetime import UTC, datetime
+from textwrap import wrap
 
 import cv2
 import numpy as np
 
 from jake.application.voice_camera import VoicePreviewSnapshot
 from jake.conversation import associate
+from jake.identity_diagnostics import IdentityDiagnostic
 from jake.preview import draw_people
 from jake.voice_domain import VisualContext, VisualPerson
 
@@ -29,6 +31,29 @@ def context_label(context: VisualContext, at: datetime, max_age: float) -> str:
     if person is None:
         return "VOICE CONTEXT: unresolved"
     return f"VOICE CONTEXT: {person_label(person)} | track={person.track_id}"
+
+
+def identity_lines(item: IdentityDiagnostic) -> tuple[str, ...]:
+    match = item.match
+    score = f" | similarity {item.similarity:.3f}" if item.similarity is not None else ""
+    confidence = (
+        f" | detector {item.detector_confidence:.3f}"
+        if item.detector_confidence is not None
+        else ""
+    )
+    temporal = item.temporal
+    age = (
+        f"{temporal.last_valid_age_seconds:.2f}s"
+        if temporal.last_valid_age_seconds is not None
+        else "none"
+    )
+    return (
+        f"ID {item.track_id} | {match.state} {match.display_name or ''}{score}",
+        f"FACE: {item.face_summary}{confidence}",
+        item.reason,
+        f"confirmations {temporal.support_count}/{temporal.required_confirmations} | "
+        f"window {temporal.window_seconds:g}s | last valid observation age {age}",
+    )
 
 
 class VoicePreview:
@@ -82,6 +107,38 @@ class VoicePreview:
                     (10, 22 + index * 25),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.5,
+                    (255, 255, 0),
+                    1,
+                )
+            details = [
+                f"Resident profiles loaded: {snapshot.resident_profile_count}"
+                if snapshot.resident_profile_count is not None
+                else "Resident identity disabled",
+                "Identity diagnostics (same pipeline; similarity is not probability)",
+            ]
+            for diagnostic in snapshot.identity_diagnostics:
+                details.append("")
+                for line in identity_lines(diagnostic):
+                    details.extend(wrap(line, width=95) or [""])
+            display = np.asarray(
+                cv2.copyMakeBorder(
+                    display,
+                    0,
+                    max(0, 25 * len(details) + 10 - display.shape[0]),
+                    0,
+                    820,
+                    cv2.BORDER_CONSTANT,
+                    value=(0, 0, 0),
+                ),
+                dtype=np.uint8,
+            )
+            for index, line in enumerate(details):
+                cv2.putText(
+                    display,
+                    line,
+                    (frame.width + 10, 22 + index * 25),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.45,
                     (255, 255, 0),
                     1,
                 )

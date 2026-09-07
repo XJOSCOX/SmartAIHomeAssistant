@@ -143,3 +143,34 @@ def test_blocked_render_does_not_hold_voice_context_lock(gui: dict[str, Mock]) -
         renderer.join(2)
         preview.close()
     assert not renderer.is_alive()
+
+
+def test_identity_panel_renders_profile_count_and_evidence(gui: dict[str, Mock]) -> None:
+    from dataclasses import replace
+
+    from jake.identity_diagnostics import IdentityDiagnostic, TemporalDiagnostic
+    from jake.identity_domain import IdentityMatch, IdentityState
+
+    item = snapshot(VisualPerson("4"))
+    diagnostic = IdentityDiagnostic(
+        "4",
+        IdentityMatch(IdentityState.CANDIDATE, display_name="Joseph", similarity=0.63),
+        0.63,
+        "candidate",
+        "accepted; 104x121 px",
+        104,
+        121,
+        0.97,
+        TemporalDiagnostic(3, 2, 3, 0),
+    )
+    item = replace(item, resident_profile_count=1, identity_diagnostics=(diagnostic,))
+    preview = VoicePreview(2)
+    try:
+        preview.update(item)
+        labels = [c.args[1] for c in gui["putText"].call_args_list]
+        assert "Resident profiles loaded: 1" in labels
+        assert any("CANDIDATE Joseph | similarity 0.630" in line for line in labels)
+        assert any("104x121 px" in line and "detector 0.970" in line for line in labels)
+        assert any("confirmations 2/3" in line for line in labels)
+    finally:
+        preview.close()

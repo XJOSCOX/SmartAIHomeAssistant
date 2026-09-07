@@ -9,6 +9,7 @@ from jake.application.voice import VoiceService
 from jake.application.voice_binding import VisualVoiceBridge
 from jake.config import AppConfig
 from jake.domain import Frame, PersonTrack
+from jake.identity_diagnostics import IdentityDiagnostic
 from jake.voice_domain import VisualContext
 
 
@@ -18,6 +19,8 @@ class VoicePreviewSnapshot:
     tracks: tuple[PersonTrack, ...]
     context: VisualContext
     processing_fps: float
+    identity_diagnostics: tuple[IdentityDiagnostic, ...] = ()
+    resident_profile_count: int | None = None
 
 
 class VoiceCamera:
@@ -64,6 +67,10 @@ class VoiceCamera:
 
             config = self.config
             components = self.session.compose()
+            if components.identity is not None:
+                print(f"Resident profiles loaded: {components.identity.profile_count}")
+            else:
+                print("Resident identity disabled; profiles not loaded")
             event_generator = self.session.event_generator()
             assert event_generator is not None
             assert components.detector is not None and components.tracker is not None
@@ -96,7 +103,12 @@ class VoiceCamera:
                     self.voice.publish(context)
                     if self._preview:
                         snapshot = VoicePreviewSnapshot(
-                            frame, pipeline.tracks, context, processing_fps
+                            frame,
+                            pipeline.tracks,
+                            context,
+                            processing_fps,
+                            components.identity.diagnostics() if components.identity else (),
+                            components.identity.profile_count if components.identity else None,
                         )
                         with self._snapshot_lock:
                             self._snapshot = snapshot

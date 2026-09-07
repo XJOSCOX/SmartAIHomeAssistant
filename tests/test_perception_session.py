@@ -25,6 +25,7 @@ def test_real_identity_pipeline_to_voice_preview(
     enabled: bool,
     override: bool | None,
     resident: bool,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     now = datetime.now(UTC)
     box = BoundingBox(0.1, 0.1, 0.9, 0.9)
@@ -68,6 +69,11 @@ def test_real_identity_pipeline_to_voice_preview(
         assert snapshot is not None
         context = voice.publish.call_args.args[0]
         assert snapshot.context is context
+        assert snapshot.resident_profile_count == (1 if resident else None)
+        if resident:
+            assert "Resident profiles loaded: 1" in capsys.readouterr().out
+            assert snapshot.identity_diagnostics[0].match.display_name == "Joseph"
+            assert face.detect.call_count == len(frames)
         assert context.people[0].identity_state == ("RESIDENT" if resident else "UNKNOWN")
         label = context_label(context, context.at, 2)
         assert ("Joseph | RESIDENT | track=4" in label) == resident
