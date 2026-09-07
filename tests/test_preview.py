@@ -330,7 +330,7 @@ def test_event_failure_cleans_up_and_cli_reports(
     monkeypatch.setattr("jake.adapters.yolo_detector.YoloPersonDetector", factory)
     event_factory = Mock()
     event_factory.return_value.generate.side_effect = EventError("bad event timeline")
-    monkeypatch.setattr("jake.cli.PersonEventGenerator", event_factory)
+    monkeypatch.setattr("jake.application.perception_session.PersonEventGenerator", event_factory)
     path = tmp_path / "config.toml"
     path.write_text(
         '[pipeline]\ncamera_id = "test"\n[events]\npresent_interval_seconds = 7', encoding="utf-8"

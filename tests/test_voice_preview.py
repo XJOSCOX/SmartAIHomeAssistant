@@ -84,6 +84,8 @@ def test_preview_requires_camera(capsys: pytest.CaptureFixture[str]) -> None:
 
 @pytest.mark.parametrize("interrupt", [False, True])
 def test_cli_preview_shutdown(monkeypatch: pytest.MonkeyPatch, interrupt: bool) -> None:
+    from jake.application.perception_session import PerceptionOverrides
+    from jake.config import AppConfig, PipelineConfig
     from jake.voice_cli import main
 
     voice, camera, display = Mock(), Mock(), Mock()
@@ -92,7 +94,9 @@ def test_cli_preview_shutdown(monkeypatch: pytest.MonkeyPatch, interrupt: bool) 
     display.update.return_value = False
     if interrupt:
         display.update.side_effect = KeyboardInterrupt
-    monkeypatch.setattr("jake.voice_cli.load_app_config", Mock())
+    monkeypatch.setattr(
+        "jake.voice_cli.load_app_config", Mock(return_value=AppConfig(PipelineConfig("test")))
+    )
     monkeypatch.setattr(
         "jake.application.voice_composition.compose_voice", Mock(return_value=voice)
     )
@@ -100,7 +104,7 @@ def test_cli_preview_shutdown(monkeypatch: pytest.MonkeyPatch, interrupt: bool) 
     monkeypatch.setattr("jake.application.voice_camera.VoiceCamera", factory)
     monkeypatch.setattr("jake.voice_preview.VoicePreview", Mock(return_value=display))
     assert main(["--with-camera", "--preview"]) == 0
-    assert factory.call_args.kwargs == {"preview": True}
+    assert factory.call_args.kwargs == {"preview": True, "overrides": PerceptionOverrides()}
     factory.assert_called_once()
     camera.start.assert_called_once()
     display.update.assert_called_once_with(camera.preview_snapshot.return_value)

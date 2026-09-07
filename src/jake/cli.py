@@ -3,11 +3,11 @@
 import argparse
 import sys
 from collections.abc import Sequence
-from dataclasses import replace
 from pathlib import Path
 
-from jake.adapters.person_events import EventError, PersonEventGenerator
+from jake.adapters.person_events import EventError
 from jake.appearance import AppearanceError
+from jake.application.perception_session import PerceptionOverrides, configure_perception
 from jake.config import load_app_config
 from jake.event_console import log_event
 from jake.identity import IdentityError
@@ -39,7 +39,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Retain recently-lost appearance tracks",
     )
     parser.add_argument(
-        "--identity", action="store_true", help="Enable enrolled local face identity"
+        "--identity",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable enrolled local face identity",
     )
     parser.add_argument(
         "--visitors",
@@ -67,40 +70,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--debug-tracks requires --track --tracker kalman")
     try:
         config = load_app_config(args.config)
-        args.identity = args.identity or config.identity.enabled
-        if args.identity and not args.track:
-            raise ValueError("identity requires --track")
-        if args.visitors is not None:
-            config = replace(config, visitors=replace(config.visitors, enabled=args.visitors))
-        if config.visitors.enabled:
-            if not args.track:
-                raise ValueError("visitor memory requires --track")
-            args.identity = True
+        session = configure_perception(
+            config,
+            PerceptionOverrides(
+                args.tracker,
+                args.assignment,
+                args.appearance,
+                args.reid,
+                args.identity,
+                args.visitors,
+            ),
+            detect=args.detect,
+            track=args.track,
+            events=args.events,
+            debug_tracks=args.debug_tracks,
+        )
+        config = session.config
         if args.debug_visitors and not config.visitors.enabled:
             raise ValueError("--debug-visitors requires visitor memory enabled")
-        if args.reid is not None:
-            config = replace(
-                config,
-                tracking=replace(
-                    config.tracking, reid=replace(config.tracking.reid, enabled=args.reid)
-                ),
-            )
-        if args.reid is True and not (
-            args.track and args.tracker == "kalman" and args.appearance is not False
-        ):
-            raise ValueError("--reid requires --track --tracker kalman and appearance")
-        if args.reid is True and args.appearance is None:
-            args.appearance = True
-        if args.appearance is not None:
-            config = replace(
-                config,
-                tracking=replace(
-                    config.tracking,
-                    appearance=replace(config.tracking.appearance, enabled=args.appearance),
-                ),
-            )
-        if args.assignment is not None:
-            config = replace(config, tracking=replace(config.tracking, assignment=args.assignment))
     except (OSError, ValueError) as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
         return 2
@@ -115,16 +102,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("Vision dependencies unavailable. Run: uv sync --extra vision", file=sys.stderr)
         return 2
     try:
-        from jake.application.composition import compose
-
-        components = compose(
-            config,
-            detect=args.detect,
-            track=args.track,
-            tracker_mode=args.tracker,
-            identify=args.identity,
-            debug_tracks=args.debug_tracks,
-        )
+        components = session.compose()
         detector, tracker = components.detector, components.tracker
         encoder, identity, visitors = components.encoder, components.identity, components.visitors
         diagnostics = components.diagnostics
@@ -133,9 +111,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             detector,
             tracker,
             track_diagnostics=diagnostics,
-            events=PersonEventGenerator(config.events)
-            if args.events or visitors is not None
-            else None,
+            events=session.event_generator(),
             event_sink=log_event
             if args.events
             else (lambda _: None)

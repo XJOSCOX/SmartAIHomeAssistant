@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from threading import Event
 
+from jake.application.perception_session import PerceptionOverrides, configure_perception
 from jake.config import load_app_config
 from jake.voice_domain import VoiceError
 
@@ -24,9 +25,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Run existing perception on a separate worker for conservative visual association",
     )
     parser.add_argument("--preview", action="store_true", help="Show annotated camera preview")
+    for feature in ("identity", "visitors", "appearance", "reid"):
+        parser.add_argument(f"--{feature}", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--tracker", choices=("kalman", "kalman-baseline", "iou"))
+    parser.add_argument("--assignment", choices=("greedy", "hungarian"))
     args = parser.parse_args(argv)
     if args.preview and not args.with_camera:
         parser.error("--preview requires --with-camera")
+    if not args.with_camera and any(
+        getattr(args, name) is not None
+        for name in ("identity", "visitors", "appearance", "reid", "tracker", "assignment")
+    ):
+        parser.error("perception overrides require --with-camera")
+    overrides = PerceptionOverrides(
+        args.tracker or "kalman",
+        args.assignment,
+        args.appearance,
+        args.reid,
+        args.identity,
+        args.visitors,
+    )
     voice = camera = None
     display = None
     try:
@@ -43,12 +61,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         from jake.application.voice_composition import compose_voice
 
         config = load_app_config(args.config)
+        if args.with_camera:
+            # Validate before opening audio or loading speech models.
+            configure_perception(config, overrides)
         voice = compose_voice(config)
         voice.start()
         if args.with_camera:
             from jake.application.voice_camera import VoiceCamera
 
-            camera = VoiceCamera(config, voice, preview=args.preview)
+            camera = VoiceCamera(config, voice, preview=args.preview, overrides=overrides)
             if args.preview:
                 from jake.voice_preview import VoicePreview
 
@@ -82,6 +103,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"{event.kind} track={event.track_id or 'unresolved'}")
     except KeyboardInterrupt:
         return 0
+    except ValueError as exc:
+        print(f"Configuration error: {exc}", file=sys.stderr)
+        return 2
     except VoiceError as exc:
         print(str(exc), file=sys.stderr)
         return 1

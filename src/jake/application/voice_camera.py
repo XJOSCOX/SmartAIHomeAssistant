@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from threading import Event, Lock, Thread
 from time import perf_counter
 
+from jake.application.perception_session import PerceptionOverrides, configure_perception
 from jake.application.voice import VoiceService
 from jake.application.voice_binding import VisualVoiceBridge
 from jake.config import AppConfig
@@ -20,8 +21,16 @@ class VoicePreviewSnapshot:
 
 
 class VoiceCamera:
-    def __init__(self, config: AppConfig, voice: VoiceService, *, preview: bool = False) -> None:
-        self.config, self.voice = config, voice
+    def __init__(
+        self,
+        config: AppConfig,
+        voice: VoiceService,
+        *,
+        preview: bool = False,
+        overrides: PerceptionOverrides | None = None,
+    ) -> None:
+        self.session = configure_perception(config, overrides)
+        self.config, self.voice = self.session.config, voice
         self._cancel = Event()
         self.finished = Event()
         self._preview = preview
@@ -51,20 +60,18 @@ class VoiceCamera:
     def _run(self) -> None:
         try:
             from jake.adapters.opencv_camera import OpenCVCamera
-            from jake.adapters.person_events import PersonEventGenerator
-            from jake.application.composition import compose
             from jake.pipeline import PerceptionPipeline
 
             config = self.config
-            components = compose(
-                config, identify=config.identity.enabled or config.visitors.enabled
-            )
+            components = self.session.compose()
+            event_generator = self.session.event_generator()
+            assert event_generator is not None
             assert components.detector is not None and components.tracker is not None
             pipeline = PerceptionPipeline(
                 config.pipeline,
                 components.detector,
                 components.tracker,
-                PersonEventGenerator(config.events),
+                event_generator,
                 encoder=components.encoder,
                 identity=components.identity,
                 visitors=components.visitors,

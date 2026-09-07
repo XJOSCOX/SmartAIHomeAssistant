@@ -295,3 +295,55 @@ Regression tests fake HighGUI, devices and models. They cover argument validatio
 one-session snapshot reuse, resident/visitor/unknown/ambiguous/stale labels, both quit
 keys, Ctrl+C cleanup, immutable frame rendering and continued VAD/STT/TTS processing
 while a renderer is deliberately blocked. No physical camera/audio test was performed.
+
+
+## Shared perception settings and explicit overrides
+
+Integrated voice and the normal camera CLI now resolve settings through
+`application/perception_session.py`: immutable `PerceptionOverrides` -> resolved
+`PerceptionSession` -> the existing adapter composer and event-generator factory.
+No face check, tracker or identity pipeline is duplicated for the voice preview.
+
+The integration mismatch was that `jake-camera` applied runtime flags before composing
+adapters, whereas voice mode read only TOML and hard-coded the default tracker mode.
+An enrolled profile does not itself enable recognition. Flags used on another command
+are not persisted into TOML. The bridge already propagated resident names correctly;
+it cannot produce RESIDENT when the upstream identity stage is disabled.
+
+Both commands now support explicit `--identity` / `--no-identity`, `--visitors` /
+`--no-visitors`, `--appearance` / `--no-appearance`, `--reid` / `--no-reid`,
+`--tracker {kalman,kalman-baseline,iou}` and `--assignment {greedy,hungarian}`.
+Omitted boolean/assignment overrides honor TOML. Overrides affect this session only;
+no configuration files or resident/visitor templates are rewritten.
+
+Voice retains its production `kalman` default; the camera CLI retains its historical
+`iou` default and requires `--track` for tracking. Tracker mode is an explicit runtime
+selection, not a new TOML field. For command parity, specify the same tracker mode.
+Appearance and ReID settings remain dormant in geometry baseline modes, preserving
+previous baseline behavior. Explicit incompatible appearance/ReID requests are rejected.
+Explicit `--reid` implies appearance unless `--no-appearance` conflicts with it.
+Visitor memory always enables resident-first screening, even with `--no-identity`;
+use `--no-visitors --no-identity` to disable both. Events are always present in the
+integrated session and are also enabled when camera visitor memory needs them.
+
+Exact integrated command matching the previously flag-driven stack, for future
+validation after repository review:
+
+```powershell
+uv run --extra voice --extra detection --extra appearance --extra identity jake-voice --config config/local.toml --with-camera --preview --tracker kalman --assignment hungarian --appearance --reid --identity --visitors
+```
+
+Alternatively retain the short `--with-camera --preview` command and explicitly set
+`[identity] enabled = true`, `[visitors] enabled = true`,
+`[tracking.appearance] enabled = true`, `[tracking.reid] enabled = true`, and
+`[tracking] assignment = "hungarian"` in the chosen TOML file. These are opt-ins;
+Jake does not enable biometric features merely because profiles exist.
+Voice perception flags require `--with-camera` and are validated before opening audio.
+The normal camera equivalents still require `--track`.
+
+Tests exercise actual temporal resident confirmation using an in-memory enrolled
+profile and fake face-model/device boundaries, then verify the same pipeline result
+reaches the bridge and preview. They also cover disabled identity and explicit
+overrides, common CLI configuration, resident-first visitor support and all tracker
+modes. Existing multi-person unresolved and single-camera tests remain in the suite.
+No physical camera, microphone or real biometric store was accessed for this fix.
