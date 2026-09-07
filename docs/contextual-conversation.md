@@ -324,7 +324,7 @@ Safe error categories:
 | SCHEMA_FAILED | Enum grammar compilation failed; unavailable, no generic-JSON fallback |
 | CONTEXT_OVERFLOW / TOKEN_BUDGET_FAILED | Request rejected; later requests may retry |
 | GENERATION_TIMEOUT / GENERATION_FAILED | Retry after current operation returns and reset succeeds |
-| INVALID_JSON / INVALID_REPLY / POLICY_REJECTED | Safe fallback; healthy model remains reusable |
+| INVALID_JSON / INVALID_RESPONSE_SHAPE / INVALID_REPLY / POLICY_REJECTED | Safe fallback; healthy model remains reusable |
 | CANCELLED | Current request cancelled; shutdown cancellation is separately terminal |
 | RESET_FAILED | Native reset/teardown failed; unavailable |
 
@@ -333,28 +333,36 @@ closed. A recoverable error can remain in last_error_code while state returns to
 ready; successful generation clears it. During timeout cleanup state remains
 generating, correctly indicating the occupied native slot.
 
-Review findings: the old implementation combined lazy loading with a request deadline,
-permanently disabled the backend after any failure, made cancellation terminal, and
-removed useful exception categories. In this checkout the configured GGUF path is
-also absent. The new health command reported MODEL_NOT_FOUND without touching devices
-or stores. No weights were downloaded and that asset-path condition was not silently
-changed.
+### Structured generation and EOS handling
 
-Compatibility review used the installed llama-cpp-python 0.3.35 source. Its
-response_format JSON-schema helper supports enum schemas, but can fall back to generic
-JSON on compiler failure. Jake now calls LlamaGrammar.from_json_schema explicitly and
-passes the compiled grammar to create_chat_completion, keeping final JSON and policy
-validation. The exact enum grammar compiled successfully in 0.3.35. The
-[published Qwen2.5 tokenizer template](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct/raw/main/tokenizer_config.json)
-also rendered successfully with its Jinja2ChatFormatter using a fixed internal message.
-That check retrieved only public tokenizer metadata, not weights. Actual GGUF inference
-could not be validated here because the configured file is missing; template/grammar
-checks alone are not a model generation benchmark.
+Physical inference with the installed Qwen2.5-1.5B-Instruct Q4_K_M and
+llama-cpp-python 0.3.35 reproduced `INVALID_JSON`: assistant content was an empty
+string and finish_reason was `stop`, despite the explicit grammar being supplied.
+The cause was EOS detokenization with the default `special=False`, which returns
+`b""` for Qwen's EOS. Jinja2ChatFormatter used this as a textual stop, matching at
+position zero and truncating the output. Jake now uses `special=True` for BOS/EOS
+and rejects an empty EOS during initialization. Qwen's EOS is `<|im_end|>`.
 
-Runtime recovery validation: **857 tests passed; 93% coverage**, with Ruff, format
-check, mypy and source/wheel build passing. New files are
-`application/conversation_health.py` and `tests/test_conversation_runtime.py`;
-lifecycle, config, adapter, voice diagnostics and existing tests were updated.
-No full voice pipeline, physical devices, real biometric stores or GGUF inference
-were used during this fix. The standalone health probe returned MODEL_NOT_FOUND
-for this checkout's current local configuration.
+The GGUF's own Jinja template still renders the assistant generation prefix.
+`added_special=True` prevents an extra BOS; EOS token-ID stopping and the nonempty
+textual EOS stop remain in place. The installed chat handler forwards Jake's explicit
+grammar to native `create_completion`. No response_format helper is used because
+its schema compiler can silently fall back to generic JSON. The enum of approved
+replies and final policy checks are unchanged.
+
+Parsing trims surrounding whitespace only. Malformed JSON, prose around JSON and
+Markdown fences remain `INVALID_JSON`. Non-string content, non-object JSON, extra
+or missing keys and non-string replies are `INVALID_RESPONSE_SHAPE`. An unapproved
+reply is `POLICY_REJECTED`. These request failures remain recoverable after reset;
+schema compilation and chat-template failures retain their separate terminal codes.
+
+Only the fixed internal health composition enables additional metadata: response
+type and length, opening/closing braces, finish reason, grammar enabled, formatter
+type and JSON parse error type. No raw content, prompts, transcripts or identity data
+are printed, even in health mode. Normal conversations do not enable this sink.
+
+After this fix the actual local model-only probe returned READY: 480 prompt tokens,
+12 output tokens and approximately 3.5 seconds generation on this machine. This is
+one health sample, not a performance guarantee. No weights were downloaded, and no
+microphone, camera, STT, TTS or biometric stores were accessed. Full voice/camera
+validation remains deferred until repository review.

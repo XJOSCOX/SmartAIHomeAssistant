@@ -14,7 +14,7 @@ def test_model(config: ConversationAIConfig, model: ConversationModel | None = N
     if model is None:
         from jake.adapters.llama_conversation import LlamaCppConversationModel
 
-        model = LlamaCppConversationModel(config)
+        model = LlamaCppConversationModel(config, health_diagnostics=print)
     worker = ConversationWorker(
         model, config.generation_timeout, load_timeout_seconds=config.load_timeout_seconds
     )

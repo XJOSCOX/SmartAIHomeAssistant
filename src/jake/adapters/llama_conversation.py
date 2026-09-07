@@ -1,6 +1,7 @@
 """Owner-thread GGUF lifecycle with recoverable requests and safe staged errors."""
 
 import json
+from collections.abc import Callable
 from dataclasses import replace
 from importlib import import_module
 from pathlib import Path
@@ -24,8 +25,15 @@ LocalConversationError = ConversationFailure
 
 
 class LlamaCppConversationModel:
-    def __init__(self, config: ConversationAIConfig) -> None:
+    def __init__(
+        self,
+        config: ConversationAIConfig,
+        *,
+        health_diagnostics: Callable[[str], None] | None = None,
+    ) -> None:
         self.config = config
+        # Only the fixed model-health composition enables this metadata sink.
+        self._health_diagnostics = health_diagnostics
         self._model: Any = None
         self._formatter: Any = None
         self._library: Any = None
@@ -105,10 +113,14 @@ class LlamaCppConversationModel:
                 eos, bos = self._model.token_eos(), self._model.token_bos()
                 self._formatter = formats.Jinja2ChatFormatter(
                     template=template,
-                    eos_token=self._model.detokenize([eos]).decode("utf-8", errors="replace")
+                    eos_token=self._model.detokenize([eos], special=True).decode(
+                        "utf-8", errors="replace"
+                    )
                     if eos >= 0
                     else "",
-                    bos_token=self._model.detokenize([bos]).decode("utf-8", errors="replace")
+                    bos_token=self._model.detokenize([bos], special=True).decode(
+                        "utf-8", errors="replace"
+                    )
                     if bos >= 0
                     else "",
                     stop_token_ids=[eos] if eos >= 0 else [],
@@ -120,6 +132,10 @@ class LlamaCppConversationModel:
                         {"role": "user", "content": "Hello."},
                     ]
                 )
+                # Jinja2ChatFormatter uses eos_token as a textual stop. An empty
+                # stop matches every completion at offset zero, even with grammar.
+                if not self._formatter.eos_token:
+                    raise ValueError
                 self._model.chat_handler = self._formatter.to_chat_handler()
             except Exception:
                 raise ConversationFailure(Code.CHAT_TEMPLATE_FAILED) from None
@@ -216,22 +232,26 @@ class LlamaCppConversationModel:
                 )
                 raise ConversationFailure(code) from None
             check_cancel()
+            if self._health_diagnostics is not None:
+                self._report_health_completion(completion)
             try:
                 content = completion["choices"][0]["message"]["content"]
                 if not isinstance(content, str) or len(content) > 2000:
                     raise ValueError
             except Exception:
-                raise ConversationFailure(Code.INVALID_REPLY) from None
+                raise ConversationFailure(Code.INVALID_RESPONSE_SHAPE) from None
             try:
-                document = json.loads(content)
-            except (ValueError, TypeError):
+                document = json.loads(content.strip())
+            except (ValueError, TypeError) as exc:
+                if self._health_diagnostics is not None:
+                    self._health_diagnostics(f"json_parse_error_type: {type(exc).__name__}")
                 raise ConversationFailure(Code.INVALID_JSON) from None
             if (
                 not isinstance(document, dict)
                 or set(document) != {"reply"}
                 or not isinstance(document["reply"], str)
             ):
-                raise ConversationFailure(Code.INVALID_REPLY)
+                raise ConversationFailure(Code.INVALID_RESPONSE_SHAPE)
             if document["reply"] not in allowed_replies(request.context):
                 raise ConversationFailure(Code.POLICY_REJECTED)
             usage = completion.get("usage", {})
@@ -266,3 +286,32 @@ class LlamaCppConversationModel:
                     self._status, state="failed", last_error_code=Code.RESET_FAILED
                 )
                 raise ConversationFailure(Code.RESET_FAILED) from None
+
+    def _report_health_completion(self, completion: Any) -> None:
+        """Fixed health request metadata only; never print response or prompt text."""
+        emit = self._health_diagnostics
+        if emit is None:
+            return
+        content: Any = None
+        finish: Any = None
+        try:
+            choice = completion["choices"][0]
+            content = choice["message"]["content"]
+            finish = choice.get("finish_reason")
+        except (KeyError, IndexError, TypeError, AttributeError):
+            pass
+        # Restrict even metadata values to known types/enums; no native payloads.
+        kind = (
+            type(content).__name__
+            if type(content) in (str, dict, list, int, float, bool)
+            else "other"
+        )
+        emit("grammar_enabled: True")
+        emit("chat_template_type: GGUF Jinja2ChatFormatter")
+        emit(f"raw_response_type: {kind}")
+        emit(f"raw_response_length: {len(content) if isinstance(content, str) else 0}")
+        emit(f"starts_with_brace: {isinstance(content, str) and content.strip().startswith('{')}")
+        emit(f"ends_with_brace: {isinstance(content, str) and content.strip().endswith('}')}")
+        emit(
+            f"finish_reason: {finish if finish in ('stop', 'length', 'tool_calls') else 'unknown'}"
+        )

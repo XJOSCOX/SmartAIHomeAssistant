@@ -237,3 +237,104 @@ def test_reset_failure_prevents_reuse(
     with pytest.raises(LocalConversationError, match="RESET_FAILED"):
         model.generate(request())
     assert model.status.state == "failed"
+
+
+@pytest.mark.parametrize("prefix,suffix", [("", ""), (" \n", ""), ("", "\n "), (" ", " ")])
+def test_strict_json_accepts_only_surrounding_whitespace(
+    backend: tuple[LlamaCppConversationModel, Mock, Mock], prefix: str, suffix: str
+) -> None:
+    model, native, _ = backend
+    native.create_chat_completion.return_value["choices"][0]["message"]["content"] = (
+        prefix + json.dumps({"reply": BASE_REPLIES[0]}) + suffix
+    )
+    model.load()
+    assert model.generate(request()).text == BASE_REPLIES[0]
+
+
+@pytest.mark.parametrize(
+    "content,code",
+    [
+        ("{", "INVALID_JSON"),
+        ('Sure! {"reply":"Hello."}', "INVALID_JSON"),
+        ('{"reply":"Hello."} Sure!', "INVALID_JSON"),
+        ('```json\n{"reply":"Hello."}\n```', "INVALID_JSON"),
+        ('{"answer":"hello"}', "INVALID_RESPONSE_SHAPE"),
+        ('{"reply":"hello","extra":0}', "INVALID_RESPONSE_SHAPE"),
+        ('{"reply":42}', "INVALID_RESPONSE_SHAPE"),
+        ("[]", "INVALID_RESPONSE_SHAPE"),
+        ("null", "INVALID_RESPONSE_SHAPE"),
+        (None, "INVALID_RESPONSE_SHAPE"),
+        ('{"reply":"not an allowed reply"}', "POLICY_REJECTED"),
+    ],
+)
+def test_response_failures_classified_and_recoverable(
+    backend: tuple[LlamaCppConversationModel, Mock, Mock], content: str | None, code: str
+) -> None:
+    model, native, _ = backend
+    model.load()
+    native.create_chat_completion.return_value["choices"][0]["message"]["content"] = content
+    with pytest.raises(LocalConversationError, match=code):
+        model.generate(request())
+    assert model.status.state == "ready"
+    native.create_chat_completion.return_value["choices"][0]["message"]["content"] = json.dumps(
+        {"reply": BASE_REPLIES[0]}
+    )
+    assert model.generate(request()).text == BASE_REPLIES[0]
+    assert native.reset.call_count == 2
+
+
+def test_special_eos_preserved_and_empty_stop_rejected(
+    backend: tuple[LlamaCppConversationModel, Mock, Mock],
+) -> None:
+    model, native, _ = backend
+    # Real 0.3.35 detokenize defaults to special=False: EOS becomes b"".
+    native.detokenize.side_effect = lambda ids, special=False: b"<|im_end|>" if special else b""
+    factory = sys.modules["llama_cpp.llama_chat_format"].Jinja2ChatFormatter
+    formatter: Mock = factory.return_value
+
+    def make_formatter(**kw: object) -> Mock:
+        formatter.eos_token = kw["eos_token"]
+        return formatter
+
+    factory.side_effect = make_formatter
+    model.load()
+    assert formatter.eos_token == "<|im_end|>"
+    assert all(call.kwargs["special"] for call in native.detokenize.call_args_list)
+    model.generate(request())
+    grammar_factory = sys.modules["llama_cpp"].LlamaGrammar.from_json_schema
+    assert native.create_chat_completion.call_args.kwargs["grammar"] is grammar_factory.return_value
+    schema = json.loads(grammar_factory.call_args.args[0])
+    assert schema["additionalProperties"] is False
+    assert schema["properties"]["reply"]["enum"] == list(BASE_REPLIES)
+    model.close()
+    other = LlamaCppConversationModel(model.config)
+    native.detokenize.side_effect = lambda *args, **kw: b""
+    with pytest.raises(LocalConversationError, match="CHAT_TEMPLATE_FAILED"):
+        other.load()
+    other.close()
+
+
+def test_health_metadata_only_and_normal_generation_silent(
+    backend: tuple[LlamaCppConversationModel, Mock, Mock], capsys: pytest.CaptureFixture[str]
+) -> None:
+    model, native, _ = backend
+    model.load()
+    model.generate(request())
+    assert capsys.readouterr().out == ""
+    model.close()
+    diagnostics: list[str] = []
+    health = LlamaCppConversationModel(model.config, health_diagnostics=diagnostics.append)
+    health.load()
+    native.create_chat_completion.return_value["choices"][0]["message"]["content"] = (
+        "PRIVATE MALFORMED"
+    )
+    native.create_chat_completion.return_value["choices"][0]["finish_reason"] = "stop"
+    with pytest.raises(LocalConversationError, match="INVALID_JSON"):
+        health.generate(request())
+    output = "\n".join(diagnostics)
+    assert "raw_response_length: 17" in output
+    assert "grammar_enabled: True" in output
+    assert "finish_reason: stop" in output
+    assert "json_parse_error_type: JSONDecodeError" in output
+    assert "PRIVATE" not in output and "MALFORMED" not in output
+    health.close()
