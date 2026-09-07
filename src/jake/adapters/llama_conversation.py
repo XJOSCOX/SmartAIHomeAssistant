@@ -10,7 +10,7 @@ from time import perf_counter
 from typing import Any
 
 from jake.conversation_ai_config import ConversationAIConfig
-from jake.conversation_context import allowed_replies, prompt_messages
+from jake.conversation_context import prompt_messages
 from jake.conversation_domain import (
     ConversationErrorCode as Code,
 )
@@ -20,6 +20,7 @@ from jake.conversation_domain import (
     ConversationResponse,
     ModelStatus,
 )
+from jake.conversation_policy import MAX_REPLY_CHARS, rejected_claim
 
 LocalConversationError = ConversationFailure
 
@@ -194,7 +195,7 @@ class LlamaCppConversationModel:
                 schema = {
                     "type": "object",
                     "properties": {
-                        "reply": {"type": "string", "enum": list(allowed_replies(request.context))}
+                        "reply": {"type": "string", "minLength": 1, "maxLength": MAX_REPLY_CHARS}
                     },
                     "required": ["reply"],
                     "additionalProperties": False,
@@ -252,7 +253,9 @@ class LlamaCppConversationModel:
                 or not isinstance(document["reply"], str)
             ):
                 raise ConversationFailure(Code.INVALID_RESPONSE_SHAPE)
-            if document["reply"] not in allowed_replies(request.context):
+            if not document["reply"].strip() or len(document["reply"]) > MAX_REPLY_CHARS:
+                raise ConversationFailure(Code.INVALID_REPLY)
+            if rejected_claim(document["reply"], request.context) is not None:
                 raise ConversationFailure(Code.POLICY_REJECTED)
             usage = completion.get("usage", {})
             if not isinstance(usage, dict):

@@ -248,3 +248,21 @@ def test_health_command_uses_only_fixed_prompt_no_devices(
     assert "Result: READY" in output and "Schema generation: OK" in output
     assert "Hello." not in output
     devices.assert_not_called()
+
+
+def test_health_accepts_novel_reply_without_devices(capsys: pytest.CaptureFixture[str]) -> None:
+    from jake.application.conversation_health import test_model
+
+    class NaturalRuntime(Runtime):
+        def generate(
+            self, request: ConversationRequest, *, cancel: Event | None = None
+        ) -> ConversationResponse:
+            self.requests.append(request)
+            return ConversationResponse("Hey. What would you like to discuss today?", 2, 20, 12)
+
+    model = NaturalRuntime()
+    assert test_model(ConversationAIConfig(), model) == 0
+    output = capsys.readouterr().out
+    assert "Result: READY" in output and "discuss today" not in output
+    assert model.closed
+    assert model.requests[0].text == "Hello."

@@ -264,7 +264,7 @@ def test_strict_json_accepts_only_surrounding_whitespace(
         ("[]", "INVALID_RESPONSE_SHAPE"),
         ("null", "INVALID_RESPONSE_SHAPE"),
         (None, "INVALID_RESPONSE_SHAPE"),
-        ('{"reply":"not an allowed reply"}', "POLICY_REJECTED"),
+        ('{"reply":"I unlocked the door."}', "POLICY_REJECTED"),
     ],
 )
 def test_response_failures_classified_and_recoverable(
@@ -305,7 +305,8 @@ def test_special_eos_preserved_and_empty_stop_rejected(
     assert native.create_chat_completion.call_args.kwargs["grammar"] is grammar_factory.return_value
     schema = json.loads(grammar_factory.call_args.args[0])
     assert schema["additionalProperties"] is False
-    assert schema["properties"]["reply"]["enum"] == list(BASE_REPLIES)
+    assert "enum" not in schema["properties"]["reply"]
+    assert schema["properties"]["reply"]["maxLength"] == 800
     model.close()
     other = LlamaCppConversationModel(model.config)
     native.detokenize.side_effect = lambda *args, **kw: b""
@@ -338,3 +339,37 @@ def test_health_metadata_only_and_normal_generation_silent(
     assert "json_parse_error_type: JSONDecodeError" in output
     assert "PRIVATE" not in output and "MALFORMED" not in output
     health.close()
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "A larger sensor often helps in low light. Where will you mount it?",
+        "Yeah, that could work. Compare the field of view too.",
+    ],
+)
+def test_native_shape_grammar_allows_natural_language(
+    backend: tuple[LlamaCppConversationModel, Mock, Mock], reply: str
+) -> None:
+    model, native, _ = backend
+    native.create_chat_completion.return_value["choices"][0]["message"]["content"] = json.dumps(
+        {"reply": reply}
+    )
+    model.load()
+    assert model.generate(request()).text == reply
+    model.close()
+
+
+@pytest.mark.parametrize("reply", ["", " " * 2, "x" * 801])
+def test_native_reply_length_checked_after_json(
+    backend: tuple[LlamaCppConversationModel, Mock, Mock], reply: str
+) -> None:
+    model, native, _ = backend
+    native.create_chat_completion.return_value["choices"][0]["message"]["content"] = json.dumps(
+        {"reply": reply}
+    )
+    model.load()
+    with pytest.raises(LocalConversationError, match="INVALID_REPLY"):
+        model.generate(request())
+    assert model.status.state == "ready"
+    model.close()

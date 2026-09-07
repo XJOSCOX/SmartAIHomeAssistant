@@ -20,7 +20,6 @@ from jake.conversation_ai_config import ConversationAIConfig
 from jake.conversation_context import (
     BASE_REPLIES,
     FALLBACK,
-    allowed_replies,
     build_context,
     personalize,
     priority_response,
@@ -200,7 +199,7 @@ def test_personalization_source_of_truth_and_capabilities() -> None:
         "5", visitor_id="v", visitor_state="KNOWN_VISITOR", display_name="Joseph"
     )
     assert request(visitor).context.speaker.resident_name is None
-    assert not any("returning visitors" in reply for reply in allowed_replies(request().context))
+    assert "visitor-1" not in prompt_messages(request())[1]["content"]
 
 
 class Model:
@@ -568,3 +567,60 @@ def test_policy_rejection_allows_next_voice_request() -> None:
         assert said[1].startswith("Hello Joseph")
     finally:
         service.close()
+
+
+def test_free_form_service_followup_and_history() -> None:
+    model = Model("Where are you thinking of installing it?")
+    service, source, said = make_service(model, text="I want another camera.")
+    service.start()
+    try:
+        feed(service, source)
+        until(lambda: service.speaker.completed == 1)
+        assert said == [model.text]
+        sleep(0.08)
+        model.text = "For low light, compare sensor sizes before resolution."
+        feed(service, source)
+        until(lambda: service.speaker.completed == 2)
+        assert said[-1] == model.text
+        assert model.requests[1].context.history == (
+            ("user", "I want another camera."),
+            ("jake", "Where are you thinking of installing it?"),
+        )
+    finally:
+        service.close()
+
+
+def test_natural_generated_name_revalidated_at_speech_time() -> None:
+    service, _, said = make_service(Model())
+    service.conversations.begin(SpeechRecognitionResult("hello", NOW, NOW, 1), PERSON)
+    session = service.conversations.session
+    assert session is not None
+    req = replace(
+        request(), context=replace(request().context, conversation_id=session.conversation_id)
+    )
+    service.speaker.start()
+    try:
+        service.publish(VisualContext(datetime.now(UTC), (PERSON, VisualPerson("other"))))
+        service._finish_ai(req, "Hey Joseph. What's up?")
+        until(lambda: bool(said))
+        assert said == [FALLBACK]
+    finally:
+        service.close()
+
+
+def test_discussing_goodbye_does_not_end_free_form_session() -> None:
+    model = Model("It is a message used to end an interaction politely.")
+    service, source, said = make_service(model, text="What is a goodbye message?")
+    service.start()
+    try:
+        feed(service, source)
+        until(lambda: bool(said))
+        assert said == [model.text]
+        assert service.conversations.session is not None
+    finally:
+        service.close()
+
+
+def test_personalization_respects_spoken_length_bound() -> None:
+    text = "Hello." + "x" * 794
+    assert personalize(text, request().context, already_named=False) == text

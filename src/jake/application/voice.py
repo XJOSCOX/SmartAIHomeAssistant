@@ -230,14 +230,6 @@ class VoiceService:
         if self._cancel.is_set():
             return
         context = request.context
-        response = (
-            generated
-            if guarded and generated is not None
-            else validate_response(generated or "", request)
-        )
-        self.ai_fallback_used = response == FALLBACK
-        if self.ai is not None and generated is not None and not guarded and response == FALLBACK:
-            self.ai.note_policy_rejection()
         with self._lock:
             latest = self._context
         current = associate(
@@ -250,14 +242,27 @@ class VoiceService:
             or current.resident_id != context.speaker.resident_id
         ):
             context = replace(context, speaker=SpeakerContext())
+        response = (
+            generated
+            if guarded and generated is not None
+            else validate_response(generated or "", replace(request, context=context))
+        )
+        self.ai_fallback_used = response == FALLBACK
+        if self.ai is not None and generated is not None and not guarded and response == FALLBACK:
+            self.ai.note_policy_rejection()
         personalized = personalize(
             response, context, already_named=self.conversations.named_in_session
         )
         result = self.conversations.finish(
-            request.context.conversation_id, request.text, personalized, request.context.timestamp
+            request.context.conversation_id,
+            request.text,
+            personalized,
+            request.context.timestamp,
+            close_session=guarded and priority_response(request.text) == "Goodbye.",
         )
         if result is not None:
-            if personalized != response:
+            name = context.speaker.resident_name
+            if personalized != response or (name and name.casefold() in personalized.casefold()):
                 self.conversations.named_in_session = True
             self.speaker.speak(result.text)
 

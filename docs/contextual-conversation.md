@@ -1,368 +1,156 @@
-# Phase 3B: contextual conversational AI
+# Phase 3B.1: controlled free-form local conversation
 
-Status: implemented for repository review. The Windows runtime imports successfully;
-no GGUF weights were downloaded, loaded or tested, and no devices or real biometric
-stores were opened for this phase.
+## Free language != free authority
 
-## Scope and language boundary
+Jake can explain cameras, computers, gardening and smart homes, brainstorm, joke and
+ask follow-up questions using the local model's pretrained knowledge. General knowledge
+is not evidence of live house facts. There are no tools, physical actions, emergency
+calling, browsing, cloud inference or persistent conversation memory.
 
-Jake now uses a local model to interpret the current message with bounded prior turns
-and structured visual context. This is a deliberately constrained conversational
-foundation: the model selects an appropriate sentence from a small approved response
-set. It can handle greetings, acknowledgments, clarification and descriptions of
-configured capabilities, including follow-up wording interpreted using history.
-It is **not unrestricted question answering or general-purpose free-form chat**.
-
-A prompt or keyword filter cannot guarantee that arbitrary generated prose avoids
-invented residents, occupancy leaks or fictional device actions. This phase therefore
-uses a JSON response schema with allowed wording and an independent exact-membership
-policy check. Invalid output becomes a generic fallback. Replacing this boundary with
-open-ended text requires a separately reviewed policy design; it is not a config toggle.
-
-Greeting personalization is inserted by deterministic code after validation. For a
-resolved, still-fresh resident context, a selected `Hello. How can I help you?` may
-become `Hello Joseph. How can I help you?` once per conversation. Other replies do
-not repeatedly add the name. Visitors receive generic wording; known-visitor names
-and visitor classifications are never spoken by this policy.
+This replaces the Phase 3B exact-sentence enum. Existing deterministic responses remain
+for sensitive requests and the non-LLM voice path; they are not a generation catalogue.
 
 ## Architecture
 
-```text
-STT result -> ConversationManager.begin
-           -> immutable context builder
-           -> high-priority deterministic guards
-           -> single bounded ConversationWorker (when no guard applies)
-           -> ConversationModel.generate
-           -> Response policy / current visual-context check
-           -> ConversationManager.finish -> asynchronous TTS
+STT -> deterministic request routing -> structured context -> one asynchronous model
+worker -> strict JSON parsing -> categorized response policy -> fresh visual identity
+recheck -> bounded session history -> asynchronous TTS.
+
+- `conversation_policy.py` owns request classification, restricted claim categories,
+  response bounds and visual name authorization, independently of the model vendor.
+- `conversation_context.py` builds context, persona and prompts, routes fixed replies
+  and optionally personalizes greetings.
+- `adapters/llama_conversation.py` implements the model port, GGUF loading, shape grammar,
+  token budgeting, strict parsing, policy checking, request cancellation and cleanup.
+- `application/voice.py` revalidates generated text against current visual association
+  before speech. The existing conversation worker keeps a single occupied generation
+  slot through timeout cleanup; no overlapping native inference or unbounded queue.
+
+Camera, tracking, identity, microphone callbacks, VAD and UI do not render/generate on
+the LLM worker. STT/TTS, recognition algorithms, arrival greeting policies and encrypted
+stores are unchanged.
+
+## Output contract
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "reply": {"type": "string", "minLength": 1, "maxLength": 800}
+  },
+  "required": ["reply"],
+  "additionalProperties": false
+}
 ```
 
-- `conversation_domain.py`: immutable ConversationContext, ConversationRequest,
-  ConversationResponse, SpeakerContext, ScenePerson and ModelStatus; ConversationModel
-  protocol with load/generate/cancel_current/cancel/status/close. No model vendor appears in these contracts.
-- `conversation_context.py`: context assembly, central prompt construction, capability
-  catalogue, deterministic precedence, response validation and greeting personalization.
-- `conversation_ai_config.py`: strict, independent opt-in configuration.
-- `adapters/llama_conversation.py`: explicit worker-owned GGUF load, token budgeting, schema
-  constrained generation, cancellation hook, native metrics and state cleanup.
-- `application/conversation_worker.py`: one active generation and bounded handoff.
-- Existing ConversationManager retains session IDs, expiry and memory-only turns.
-  Existing voice composition/worker/CLI connect the optional path. Vision, identity,
-  visitor algorithms, encrypted stores, STT, TTS, VAD and arrival greetings are unchanged.
+Jake explicitly compiles and supplies the grammar; no enum or response_format fallback
+is used. Parsing trims outer whitespace only, requires exactly the reply key and a
+nonblank string, and independently checks length and policy. Prose, fences, malformed
+JSON and extra keys remain errors. There is no arbitrary extraction, rewriting into
+valid JSON, or mid-sentence truncation. The persona targets 1-3 spoken sentences; token
+and 800-character limits are hard bounds. A truncated invalid response falls back safely.
 
-When disabled, the original deterministic responses and existing Phase 3A flow remain
-in use. Merely installing the optional dependency does not load a model or enable AI.
+The validated Qwen2.5-1.5B-Instruct Q4_K_M remains the initial model. Its own GGUF Jinja
+chat template and assistant prefix are used. BOS/EOS detokenization preserves special
+tokens; an empty EOS stop is rejected. This preserves the previous physical INVALID_JSON
+fix. Native timing excludes load, and the exact rendered prompt determines token budget.
 
-## Context and prompt
+## Deterministic request guards
 
-The context contains:
+Occupancy/location requests such as `Is Joseph home?`, `Who is inside?` and `Where is
+Joseph?` return the fixed privacy refusal. Occupancy disclosure remains disabled for
+all speakers, including residents, in this phase. General `What is a smart home?` or
+`How can I improve my home's Wi-Fi?` reaches conversation.
 
-- Conversation ID and local timestamp using the configured `[home] timezone` via
-  Python ZoneInfo, with no internet time lookup.
-- Speaker association status (`visual_only` or `unresolved`), track ID, identity state,
-  authorized resident ID/name, and visitor ID/state where appropriate.
-- Visible track metadata and resident/visitor counts from the fresh visual snapshot,
-  plus the snapshot timestamp. Names of other visible people are not forwarded.
-- Bounded prior turns and a list of supported/unsupported capabilities. Standalone
-  voice does not claim visual recognition capabilities; integrated CLI overrides
-  are resolved before those capabilities are assembled.
+Requests to unlock doors, switch lights, set thermostats, arm alarms or browse receive
+an unavailable-action response. Explanations such as `How do smart locks work?` reach
+the model. Emergency calling requests receive the fixed no-calling response; general
+emergency information questions can be discussed. Private prompt, key, credential and
+biometric-template requests are guarded. Explicit goodbye closes the conversation.
+`I have a package` retains deterministic delivery routing; questions about delivery
+companies are ordinary conversation.
 
-The existing exactly-one-visible-confirmed-person rule remains authoritative.
-A second visible person, tentative-only person, stale/future context or absent camera
-leaves association unresolved. User statements such as `I am Joseph` never create
-identity. Candidate names are not treated as resolved resident names. Context is
-associated at speech onset, including the actual VAD onset timestamp rather than
-pre-roll start. Before speaking a personalized response, fresh visual evidence must
-still match the same resident/track. This does not identify speakers acoustically.
+## Post-generation policy and limitations
 
-Prompts use a fixed Jake persona and explicitly serialized JSON sections for identity,
-scene, capabilities, local time, prior conversation and current text. No Python repr,
-configuration dump, image, audio, embedding, key or store path is serialized. JSON
-escapes control characters and chat-delimiter angle brackets. User text and names
-remain data, not trusted instructions; output enforcement does not depend on escaping
-alone. Prompts and raw responses are not logged.
+A deterministic validator classifies subject/predicate patterns for occupancy/location,
+action completion or authority, emergency dispatch, identity assertions/direct address,
+visitor status, secret disclosure and unsupported sensor/history facts. Capability
+claims are checked against configured perception support. It inspects wording and
+context, not membership in a list of responses or model-supplied claims. Novel safe
+wording is accepted. Rejected claims produce the existing fallback and POLICY_REJECTED.
 
-The backend renders the GGUF's own chat template and counts that exact prompt with
-its tokenizer, reserving the configured output budget. It drops oldest history
-exchanges if needed, and reports CONTEXT_OVERFLOW if the remaining request cannot
-fit. The same formatter is installed as the native chat handler; no fallback to an
-unrelated template occurs. Returned native usage supplies reported token counts.
+These English patterns are defense in depth, not a semantic proof that arbitrary prose
+is safe. Novel phrasing, other languages and indirect claims can evade patterns; cautious
+patterns can also reject benign wording. Prompt instructions are not an authorization
+boundary. No tool execution exists regardless of generated text. General model knowledge
+can be inaccurate. Quality and robustness remain model-dependent and require review and
+adversarial testing before broader deployment.
 
+As an additional privacy boundary, the model prompt omits household counts, other people,
+resident/visitor IDs and visitor classifications. The domain retains scene metadata for
+other deterministic consumers. The conversation prompt includes authorized speaker name,
+association state, configured capabilities, timestamp and bounded turns, but no credentials,
+biometrics, images or store data. Raw prompts and replies are not logged.
 
-## Deterministic precedence and policy
+## Identity and history
 
-Before generation, occupancy/location questions (including `Is Joseph home?`), emergency
-requests, unsupported controls, private system/biometric questions, goodbye and delivery
-receive fixed responses. These broad guards deliberately favor refusal over disclosure;
-phrasing that mentions `home`, residents or visitors can receive a conservative refusal.
-Goodbye closes the session. Delivery instructions never claim a package was received.
-These additional guards apply only when conversation AI is enabled, preserving Phase 3A
-behavior when disabled.
+Only an exactly-one-fresh-confirmed-visible-person association in RESIDENT state with an
+authorized name permits direct address. A visitor, ambiguous scene or self-declaration
+such as `I am Joseph` grants no identity. Visitor classifications are never automatically
+spoken. Natural `Hey Joseph` and `Good evening, Joseph` are permitted for the authorized
+resident, without requiring one exact greeting string. The prompt discourages repeated
+names; optional deterministic name insertion happens once per session. Generated names
+are checked again using the latest visual association before TTS, so stale/changed
+association cannot authorize a delayed personalized response. This is visual conversation
+context, not acoustic speaker identification.
 
-After generation, only an exact allowed sentence passes. Capability sentences are
-available only for enabled integration capabilities. Arbitrary names, visitor labels,
-claims about who is present, unlock/lock actions, calls to police, package receipt,
-historical events, prompts and secrets are not valid generated responses. A model
-cannot invoke tools: no tool execution surface or home-control adapter was introduced.
+History uses the existing bounded session-local deque. It supplies prior user/Jake turns
+for references such as `Low light` after a camera discussion. Oldest exchanges are removed
+if the exact token budget requires it. Session timeout or association change clears the
+history; goodbye clears it. Nothing is written to disk.
 
-The approved set is intentionally small. A tiny model may still choose an irrelevant
-but allowed reply; the policy limits what it can claim, not whether every selection
-is conversationally useful. No model-quality or response-latency claim has been
-established without physical model evaluation.
+## Configuration and runtime
 
-## Bounded execution, expiry and failures
+AI stays opt-in with `[conversation_ai] enabled = true`. Model is a configurable local
+GGUF path; Qwen is unchanged and other GGUF models can later implement the same port.
+No weights are downloaded automatically. Native conversation dependencies must already
+be installed. Recommended initial temperature is **0.6**, now the default/example, to
+allow more variation than enum-era 0.2. This is a starting point for review, not a measured
+quality optimum or a safety control. Existing explicit local values are untouched. Model
+quality evaluation is deferred. The output token budget remains configurable (default 96).
 
-The camera worker, native microphone callback, voice/VAD worker, conversation worker
-and TTS worker have separate ownership. LLM load/generation happens only on the
-conversation worker. One job, including its pending result, occupies the slot; no
-unbounded utterance queue exists. VAD continues during generation, but additional
-completed utterances are discarded until the answer is ready. This phase has no
-barge-in. Existing half-duplex TTS suppression remains unchanged.
+Loading defaults to 120 seconds and generation to 30 seconds. The legacy timeout_seconds
+is a generation-only alias and takes precedence if both fields are present. Failures
+retain typed codes: SCHEMA_FAILED and CHAT_TEMPLATE_FAILED are distinct from
+GENERATION_FAILED, GENERATION_TIMEOUT, INVALID_JSON, INVALID_RESPONSE_SHAPE, INVALID_REPLY
+and POLICY_REJECTED. Request errors remain recoverable after native reset; reset failures
+make the model unavailable. Shutdown is terminal and separate from request cancellation.
 
-Model loading starts asynchronously when the worker starts, before any user request.
-The default load deadline is 120 seconds; the independent generation deadline is
-30 seconds and starts only when the owner begins a request. While loading,
-unguarded utterances receive `I'm still starting up.` without failing the backend.
-Deterministic privacy/action guards remain active. Audio/camera initialization does
-not wait for GGUF loading.
+## Commands after repository review
 
-Missing files, import/load/template/schema failures and reset failures make the
-backend unavailable until restart. A generation timeout, malformed JSON, rejected
-reply, context overflow or generation error is recoverable after the owner finishes
-and native reset succeeds. The same generic spoken fallback remains privacy-safe;
-metadata codes explain the difference. No new request can overlap an operation
-that is still unwinding after timeout.
-
-Per-generation cancellation uses its own event; shutdown uses a separate terminal
-signal. Timeout or conversation expiry cancels only the current generation. The
-native owner resets state before allowing another request. All native load, inference,
-reset and close calls occur on the owner thread. A failed reset marks the backend
-unavailable. Native load or prompt evaluation may finish its current operation before
-stopping; deadlines are observable, not hard native preemption. Shutdown waits for
-that operation to return and closes the model on the same thread.
-
-The existing conversation timeout clears manager history. If expiry occurs during
-inference, active generation is cancelled and its response cannot attach to a new
-session. A cancelled/expired request releases its remaining worker references when
-the cooperative native call returns. No transcript is saved to disk. Native attention
-state is reset between requests; explicit bounded history supplies continuity.
-Memory cleanup is not a guarantee of secure erasure from native/OS memory.
-
-## Metrics and safe diagnostics
-
-The CLI prints AI enabled/disabled, worker state, load milliseconds, generation
-milliseconds, backend prompt/output token counts, tokens/sec, fallback-used status
-and a typed `last_error_code`. Exception messages, prompts and transcripts are never logged.
-Missing metrics are `None`, never invented zero counts or rates. Generation latency
-includes prompt preparation/evaluation and output generation, excluding model load;
-a failed request's latency is elapsed request time. Load time is reported separately.
-This non-streaming adapter does not expose isolated decode timing, so tokens/sec is
-currently unavailable rather than presenting total request throughput as decode speed.
-
-The integrated preview continues to show the source-of-truth speaker context and
-identity diagnostics. No system-prompt inspection, transcript logs or biometric-vector
-logging was added.
-
-## Backend and model choice
-
-Embedded **llama-cpp-python / llama.cpp** avoids an Ollama service dependency and offers
-GGUF CPU execution plus future native hardware backends. Ollama would add a separate
-service lifecycle; this phase does not need one. See the
-[official Python runtime documentation](https://llama-cpp-python.readthedocs.io/en/latest/).
-
-Recommended initial model: **Qwen2.5-1.5B-Instruct, Q4_K_M GGUF**, configurable as a local
-path. The publisher's file is approximately **1.12 GB**. Its small size and existing
-instruct GGUF packaging make it a conservative first candidate; this is not a claim
-that it outperforms Qwen3, Llama, Gemma or Phi. Those remain replaceable model choices
-subject to local chat-template/schema compatibility and later evaluation.
-[Publisher model files](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/tree/main).
-
-The inspected Windows host has a Ryzen 9 9950X (16 cores/32 threads) and approximately
-31.2 GiB physical memory. Four LLM CPU threads leave room for perception and speech.
-Budget roughly **2–4 GiB additional RAM** for this model/runtime at 4,096 context tokens
-as a planning estimate, not a measured peak; the complete vision/STT/TTS stack needs
-additional memory. No tokens/sec estimate is claimed.
-
-Windows CPU wheel 0.3.35 was installed and its import/API signatures checked without
-loading weights. Jetson Orin needs an ARM64 build appropriate for its JetPack/native
-libraries; the current adapter uses CPU (`n_gpu_layers=0`). GPU offload is not enabled
-in this phase. Raspberry Pi may need a smaller model/context and native build; neither
-latency nor deployment has been validated there. Optional native dependencies do not
-become mandatory for core tests or disabled AI.
-
-## Explicit setup and future commands
-
-These commands are documentation for **after repository review**, not a request to
-run a model now. Use the existing voice configuration and model assets described in
-[the local voice guide](local-voice.md). No GGUF is bundled or downloaded by Jake.
-
-Windows CPU dependency setup using the upstream wheel index (the tested version):
-
-```powershell
-uv sync --extra voice
-uv pip install --python .venv/Scripts/python.exe --only-binary llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu llama-cpp-python==0.3.35
-```
-
-For an integrated environment, retain its extras when syncing:
-
-```powershell
-uv sync --extra voice --extra detection --extra appearance --extra identity
-uv pip install --python .venv/Scripts/python.exe --only-binary llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu llama-cpp-python==0.3.35
-```
-
-The optional project extra is named `conversation`. `uv sync --extra conversation`
-can build llama-cpp-python from source and requires the platform toolchain. The above
-wheel setup avoids requiring a Windows compiler. Subsequent `uv run` commands retain
-installed optional packages; an exact `uv sync` without that extra can remove them,
-so reinstall the wheel after such a sync. Do not change the whole project's package
-index to the wheel repository.
-
-Explicit model download with a separate setup tool (network required only here):
-
-```powershell
-uv run --extra voice python -c "from huggingface_hub import hf_hub_download; hf_hub_download(repo_id='Qwen/Qwen2.5-1.5B-Instruct-GGUF', filename='qwen2.5-1.5b-instruct-q4_k_m.gguf', local_dir='models/llm')"
-```
-
-Alternatively copy an already-provisioned GGUF into a local folder and set its absolute
-path. Runtime accepts a local file only and never invokes hub download helpers or a
-network model server. Review publisher terms when redistributing models.
-
-Add the example table to your existing TOML without replacing its other settings:
-
-```toml
-[conversation_ai]
-enabled = true
-backend = "llama_cpp"
-model = "models/llm/qwen2.5-1.5b-instruct-q4_k_m.gguf"
-context_tokens = 4096
-max_output_tokens = 96
-temperature = 0.2
-top_p = 0.9
-threads = 4
-load_timeout_seconds = 120.0
-generation_timeout_seconds = 30.0
-```
-
-The repository example defaults `enabled = false`. `[audio] enabled = true` remains
-an independent requirement. Existing configs are valid unchanged. Relative model
-paths use the working directory; no configuration or model file is silently migrated.
-
-Exact standalone command after setup:
-
-```powershell
-uv run --extra voice jake-voice --config config/local.toml
-```
-
-Exact integrated command after setup:
-
-```powershell
-uv run --extra voice --extra detection --extra appearance --extra identity jake-voice --config config/local.toml --with-camera --preview --tracker kalman --assignment hungarian --appearance --reid --identity --visitors
-```
-
-q/Q in the preview and Ctrl+C stop the session, including pending conversational work.
-
-## Files and validation
-
-Added: `conversation_ai_config.py`, `conversation_domain.py`, `conversation_context.py`,
-`adapters/llama_conversation.py`, `application/conversation_worker.py`,
-`tests/test_conversation_ai.py`, `tests/test_llama_conversation.py`, and this guide.
-Updated: `conversation.py`, `application/voice.py`, `application/voice_composition.py`,
-`voice_cli.py`, `config.py`, `config/jake.example.toml`, `pyproject.toml`, `uv.lock`,
-`README.md`.
-
-Fake-model tests exercise opt-in configuration, unchanged deterministic mode, context
-provenance/timezone, personalization, guarded intents, rejected output, bounded history,
-timeout/failure fallback, one active job, independent VAD/camera handoff, shutdown,
-GGUF local-only loading, JSON schema handling and token-pressure history dropping.
-Adapter tests forbid network connections. Physical LLM testing remains deferred for
-repository review.
-
-Final validation: **838 tests passed, 93% total coverage**; Ruff check, format check
-(125 files), mypy, and source/wheel package build passed. The existing Phase 3A suite
-remains included. Runtime verification was limited to installation/import/API signatures;
-no real LLM, microphone, speaker, camera or biometric-store test was performed.
-
-
-## Runtime recovery and model-only health command
+Fixed model-only health check (no microphone, camera, STT, TTS or identity stores):
 
 ```powershell
 uv run --extra voice jake-voice --config config/local.toml --test-conversation-model
 ```
 
-This explicit probe does not require audio.enabled or conversation_ai.enabled. It
-loads the configured local model, checks the GGUF template, generates one fixed
-internal `Hello.` request, validates JSON/schema and the unchanged allowed-reply
-policy, reports token/timing metadata and unloads. It accepts no arbitrary prompt
-and never composes microphone, camera, STT, TTS, residents or visitor stores. Exit
-status is 0 for READY, 1 for a model failure and 130 for interruption. It prints no
-prompt or reply text. The optional native conversation runtime must already be installed.
+READY means actual generation produced a nonempty, structurally valid, policy-safe string;
+it no longer requires prewritten wording. Health-only metadata reports grammar, formatter,
+content type/length, finish reason and parse-error type without printing raw text. Load,
+token counts and generation latency remain visible. The owner thread resets/unloads.
 
-The normal standalone voice command remains:
+Standalone voice:
 
 ```powershell
 uv run --extra voice jake-voice --config config/local.toml
 ```
 
-Integrated flags and policy/identity behavior are unchanged. Full voice testing
-remains deferred until repository review.
+Integrated voice and annotated camera, using existing local models and configured stores:
 
-Legacy `conversation_ai.timeout_seconds` remains accepted as a generation-only alias.
-It never limits model loading. If both the legacy alias and the new generation field
-are supplied, the legacy alias takes precedence; remove it to use the new field.
-Existing config serialization preserves this behavior and omits null aliases. Defaults
-are 120 seconds for load and 30 for generation; existing explicit 20-second configs
-retain 20 seconds for generation.
+```powershell
+uv run --extra voice --extra detection --extra appearance --extra identity jake-voice --config config/local.toml --with-camera --preview --tracker kalman --assignment hungarian --appearance --reid --identity --visitors
+```
 
-Safe error categories:
-
-| Code | Behavior |
-| --- | --- |
-| MODEL_NOT_FOUND | Configured GGUF is absent; unavailable until restart |
-| BACKEND_IMPORT_FAILED | Optional native runtime cannot import; unavailable |
-| MODEL_LOAD_FAILED / MODEL_LOAD_TIMEOUT | Initialization failed/exceeded its own budget; unavailable |
-| CHAT_TEMPLATE_FAILED | Missing/invalid GGUF template or rendering failure; unavailable |
-| SCHEMA_FAILED | Enum grammar compilation failed; unavailable, no generic-JSON fallback |
-| CONTEXT_OVERFLOW / TOKEN_BUDGET_FAILED | Request rejected; later requests may retry |
-| GENERATION_TIMEOUT / GENERATION_FAILED | Retry after current operation returns and reset succeeds |
-| INVALID_JSON / INVALID_RESPONSE_SHAPE / INVALID_REPLY / POLICY_REJECTED | Safe fallback; healthy model remains reusable |
-| CANCELLED | Current request cancelled; shutdown cancellation is separately terminal |
-| RESET_FAILED | Native reset/teardown failed; unavailable |
-
-States exposed by the worker are disabled, loading, ready, generating, failed and
-closed. A recoverable error can remain in last_error_code while state returns to
-ready; successful generation clears it. During timeout cleanup state remains
-generating, correctly indicating the occupied native slot.
-
-### Structured generation and EOS handling
-
-Physical inference with the installed Qwen2.5-1.5B-Instruct Q4_K_M and
-llama-cpp-python 0.3.35 reproduced `INVALID_JSON`: assistant content was an empty
-string and finish_reason was `stop`, despite the explicit grammar being supplied.
-The cause was EOS detokenization with the default `special=False`, which returns
-`b""` for Qwen's EOS. Jinja2ChatFormatter used this as a textual stop, matching at
-position zero and truncating the output. Jake now uses `special=True` for BOS/EOS
-and rejects an empty EOS during initialization. Qwen's EOS is `<|im_end|>`.
-
-The GGUF's own Jinja template still renders the assistant generation prefix.
-`added_special=True` prevents an extra BOS; EOS token-ID stopping and the nonempty
-textual EOS stop remain in place. The installed chat handler forwards Jake's explicit
-grammar to native `create_completion`. No response_format helper is used because
-its schema compiler can silently fall back to generic JSON. The enum of approved
-replies and final policy checks are unchanged.
-
-Parsing trims surrounding whitespace only. Malformed JSON, prose around JSON and
-Markdown fences remain `INVALID_JSON`. Non-string content, non-object JSON, extra
-or missing keys and non-string replies are `INVALID_RESPONSE_SHAPE`. An unapproved
-reply is `POLICY_REJECTED`. These request failures remain recoverable after reset;
-schema compilation and chat-template failures retain their separate terminal codes.
-
-Only the fixed internal health composition enables additional metadata: response
-type and length, opening/closing braces, finish reason, grammar enabled, formatter
-type and JSON parse error type. No raw content, prompts, transcripts or identity data
-are printed, even in health mode. Normal conversations do not enable this sink.
-
-After this fix the actual local model-only probe returned READY: 480 prompt tokens,
-12 output tokens and approximately 3.5 seconds generation on this machine. This is
-one health sample, not a performance guarantee. No weights were downloaded, and no
-microphone, camera, STT, TTS or biometric stores were accessed. Full voice/camera
-validation remains deferred until repository review.
+These commands document future validation; full voice/camera testing remains deferred
+until repository review. Tests use fake model outputs with no devices, GPU, weights,
+network or biometric stores.

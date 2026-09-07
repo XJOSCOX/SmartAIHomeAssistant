@@ -6,18 +6,16 @@ support natural conversation. **Phase 2D adds opt-in anonymous recurring visitor
 separate from enrolled residents, with encrypted templates and retention controls.
 All tracker modes remain available; track IDs are session-local, not resident identities.**
 
-## Phase 3B contextual conversation
+## Phase 3B.1 controlled free-form conversation
 
-An independently opt-in embedded llama.cpp adapter now interprets bounded multi-turn
-conversation using explicit perception context. Deterministic guards precede the model;
-validated response wording and perception-authorized greeting personalization follow it.
-This phase intentionally uses a small approved response set, not unrestricted model prose.
-See the [contextual conversation guide](docs/contextual-conversation.md) for architecture,
-manual GGUF setup, policy limits and future validation commands. Disabled AI retains
-Phase 3A deterministic behavior. Use `jake-voice --config config/local.toml
---test-conversation-model` for a fixed model-only health probe, with no microphone or
-camera. Loading has its own deadline; recoverable request failures can retry after cleanup.
-No LLM weights have been downloaded or tested physically.
+Jake now generates bounded natural replies with the validated local Qwen GGUF runtime.
+**Free language != free authority:** deterministic request guards and categorized
+response checks protect occupancy, identity and unavailable actions. The model has no
+tools, network access or persistent conversation memory. Replies use a shape-only JSON
+grammar, not an enum of canned sentences. Visual identity is rechecked before speech.
+See the [conversation guide](docs/contextual-conversation.md) for policy limitations,
+model configuration, health checks and standalone/integrated commands. Full voice/camera
+validation is deferred until repository review.
 
 ## Phase 3A local voice foundation
 

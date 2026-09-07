@@ -12,7 +12,7 @@ class ConversationAIConfig:
     model: str = "models/llm/qwen2.5-1.5b-instruct-q4_k_m.gguf"
     context_tokens: int = 4096
     max_output_tokens: int = 96
-    temperature: float = 0.2
+    temperature: float = 0.6
     top_p: float = 0.9
     threads: int = 4
     # Legacy alias: when supplied, applies only to generation.

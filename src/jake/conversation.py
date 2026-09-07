@@ -117,6 +117,8 @@ class ConversationManager:
         text: str,
         response: str,
         at: datetime,
+        *,
+        close_session: bool | None = None,
     ) -> SpeechRequest | None:
         if self.session is None or self.session.conversation_id != conversation_id:
             return None
@@ -129,7 +131,8 @@ class ConversationManager:
                 self.session.association.track_id if self.session.association else None,
             )
         )
-        if intent(text) == "GOODBYE":
+        should_close = close_session if close_session is not None else intent(text) == "GOODBYE"
+        if should_close:
             self.end(at)
         return SpeechRequest(response)
 
