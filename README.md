@@ -1,4 +1,4 @@
-# Jake — SmartAIHomeAssistant
+# Jake â€” SmartAIHomeAssistant
 
 Jake is the foundation for a privacy-first, local-first smart home AI system.
 The intended system will understand household events locally and eventually
@@ -11,7 +11,9 @@ All tracker modes remain available; track IDs are session-local, not resident id
 Opt-in local microphone capture, WebRTC VAD, faster-whisper transcription and Piper
 speech output now feed a bounded, deterministic conversation service. There is no LLM,
 audio archive or transcript persistence. Optional camera integration supplies conservative
-visual association and explicitly enabled semantic arrival greetings.
+visual association and explicitly enabled semantic arrival greetings. Phase 3A.1 adds
+`--with-camera --preview` to `jake-voice` for annotated live context diagnostics;
+q/Q shuts down the integrated session.
 
 See the [local voice architecture and setup guide](docs/local-voice.md) for model setup,
 device selection, commands, privacy boundaries and platform limitations. Microphone and
@@ -39,7 +41,7 @@ for architecture, data handling, threading limits, EXE and Inno Setup build inst
 The initial boundary is:
 
 ```text
-Camera adapter → Frame → PersonDetector → PersonTracker → EventGenerator → caller
+Camera adapter â†’ Frame â†’ PersonDetector â†’ PersonTracker â†’ EventGenerator â†’ caller
                     RGB      detections       tracks          metadata
 ```
 
@@ -138,7 +140,7 @@ uv build
 `vision` extra installs `opencv-python` (with GUI support) and NumPy. Tests use real
 color conversion with fake camera/GUI boundaries; no physical camera or desktop
 is required in CI. For another interpreter, add `--python 3.13` to the sync command.
-CI runs checks and packaging on Python 3.11–3.14 with the vision extra installed.
+CI runs checks and packaging on Python 3.11â€“3.14 with the vision extra installed.
 Detector tests mock the model boundary and need neither Ultralytics/PyTorch nor
 weights, GPU, network, or webcam. Install `--extra detection` to run real inference;
 this includes the vision dependencies and a pinned Ultralytics version. Keep that
@@ -279,7 +281,7 @@ across time. This `--detect` mode performs no tracking; use `--track` for Phase 
 - Model initialization occurs before camera opening and outside the measurement.
   The first detection includes lazy initialization/warmup and can be much slower.
 - CPU is the explicit default. Your validated camera-only result of about 19 FPS
-  at 640×480 on Windows is an acquisition baseline, not a detection benchmark.
+  at 640Ã—480 on Windows is an acquisition baseline, not a detection benchmark.
   Detection adds work and may reduce preview FPS. Try `image_size = 320` for
   less compute, with a possible small/distant-person accuracy tradeoff.
 - For an NVIDIA GPU, install a matching CUDA-enabled PyTorch/torchvision build
@@ -356,7 +358,7 @@ their cost is included in preview throughput.
 For two boxes A and B:
 
 ```text
-IoU(A, B) = area(A ∩ B) / (area(A) + area(B) - area(A ∩ B))
+IoU(A, B) = area(A âˆ© B) / (area(A) + area(B) - area(A âˆ© B))
 ```
 
 Identical boxes score 1; disjoint or merely touching boxes score 0. The tracker
@@ -395,9 +397,9 @@ camera frames were not evaluated and do not count as observed misses. One tracke
 belongs to one camera session and must be called serially. Mixed camera IDs and
 duplicate/decreasing sequences raise `TrackerError` without changing state.
 
-For T active tracks and D detections, candidate generation is **O(T × D)**.
+For T active tracks and D detections, candidate generation is **O(T Ã— D)**.
 Sorting K valid candidates costs **O(K log K)**, at worst approximately
-**O((T × D) log(T × D))**. Candidate storage is **O(T × D)** worst case;
+**O((T Ã— D) log(T Ã— D))**. Candidate storage is **O(T Ã— D)** worst case;
 lifecycle maintenance costs O(T + D), with O(T) persistent state. No image history,
 network calls, identity recognition, or disk persistence is involved.
 
@@ -450,7 +452,7 @@ initial_velocity_variance = 1.0
 
 All are finite positive variances/intensities, not standard deviations. Old
 configuration files use these defaults. dt uses capture timestamps, clamped to
-1 ms–1 s; repeated/backward clocks fall back to 1/30 s. See the
+1 msâ€“1 s; repeated/backward clocks fall back to 1/30 s. See the
 [Kalman design and diagnostics](docs/kalman-tracking.md) for the matrices,
 noise model, numerical stability, lifecycle, and limitations.
 
@@ -486,7 +488,7 @@ preview displays the selected strategy. Normal labels and exit controls remain.
 
 The global objective maximizes valid match count, then minimizes total IoU cost.
 It uses dummy unmatched nodes and forbidden costs above the all-unmatched solution.
-Hungarian complexity is approximately O(n³) time and O(n²) space, with n=T+D for
+Hungarian complexity is approximately O(nÂ³) time and O(nÂ²) space, with n=T+D for
 the gated tracking matrix. It costs more than greedy, and cannot guarantee fewer
 ID switches when geometry is ambiguous. Track IDs remain session-local.
 
@@ -498,7 +500,7 @@ switches for both. A gated-bottleneck regression demonstrates a case where globa
 matching preserves two connections while greedy creates a third ID.
 
 See [global assignment design](docs/global-assignment.md) for the algorithm,
-penalty policy, complexity, evaluation method, and limitations. Phase 1A–1E have been physically validated; no appearance or identity recognition is added.
+penalty policy, complexity, evaluation method, and limitations. Phase 1Aâ€“1E have been physically validated; no appearance or identity recognition is added.
 
 ## Phase 1F: semantic person events
 
@@ -565,7 +567,7 @@ Omit `--debug-tracks` for normal preview. Add the new settings from
 `config/jake.example.toml` to your existing `[tracking]` table; old files use defaults.
 `max_missed_frames` now applies only to `iou` and `kalman-baseline`.
 Use `--tracker kalman-baseline` to reproduce the earlier Kalman behavior described
-in Phase 1D–1F above; the Python `KalmanPersonTracker` also retains that baseline.
+in Phase 1Dâ€“1F above; the Python `KalmanPersonTracker` also retains that baseline.
 `StabilizedKalmanPersonTracker` is the new production adapter.
 
 ```sh
@@ -792,7 +794,7 @@ are ignored by Git; ignore rules are not an access-control mechanism.
 
 The Phase 1 foundation, 1A acquisition, 1B detection, 1C IoU tracking, 1D
 Kalman-assisted tracking, 1E global assignment, 1F semantic events, and 1G stabilization are implemented.
-Phase 1A was physically validated on Windows at approximately 19 FPS, 640×480,
+Phase 1A was physically validated on Windows at approximately 19 FPS, 640Ã—480,
 with advancing sequences and successful shutdown. Phase 1B was also physically
 validated with multiple people and CPU inference fast enough for development.
 Phase 1C has been physically validated with multiple people; crossing/occlusion
@@ -802,11 +804,11 @@ awaits physical validation. The sequence below is a planning outline.
 
 | Phase | Planned capabilities |
 | --- | --- |
-| 1 — perception | Foundation through 1G track stabilization implemented |
-| 2 — recognition | 2A/2A.1 body continuity, 2B resident identity, 2C encrypted storage, and 2D opt-in anonymous recurring visitor memory implemented; no automatic naming or visitor classification |
-| 3 — understanding and memory | Activity recognition, event memory, household behavioral learning, anomaly detection, and governed continual learning |
-| 4 — voice and interaction | Speech recognition, text-to-speech, basic conversational AI, context-aware resident greetings, and daily/event summaries |
-| 5 — multiple hubs | Privacy-preserving context coordination and conversational handoff between household hubs |
+| 1 â€” perception | Foundation through 1G track stabilization implemented |
+| 2 â€” recognition | 2A/2A.1 body continuity, 2B resident identity, 2C encrypted storage, and 2D opt-in anonymous recurring visitor memory implemented; no automatic naming or visitor classification |
+| 3 â€” understanding and memory | Activity recognition, event memory, household behavioral learning, anomaly detection, and governed continual learning |
+| 4 â€” voice and interaction | Speech recognition, text-to-speech, basic conversational AI, context-aware resident greetings, and daily/event summaries |
+| 5 â€” multiple hubs | Privacy-preserving context coordination and conversational handoff between household hubs |
 
 Keep new model frameworks behind adapters and add dependencies only with a
 concrete integration. Later phases should introduce their own contracts when

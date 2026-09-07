@@ -128,8 +128,8 @@ uv run --extra voice --extra detection --extra appearance --extra identity jake-
 ```
 
 This uses existing configured vision models, tracker, identity/visitor opt-ins and
-semantic events on a separate worker. It has no camera preview; existing preview
-commands are preserved. Ctrl+C shuts down the session. Desktop settings preserve
+semantic events on a separate worker. Add `--preview` for an annotated development
+window; existing preview commands are preserved. Ctrl+C shuts down the session. Desktop settings preserve
 voice config, but desktop audio controls, voice autostart and packaged voice runtimes
 are not added in this phase.
 
@@ -252,3 +252,46 @@ Ruff format check (111 files), mypy (97 source files), and source/wheel package 
 all passed. Windows dependency import/API checks passed without loading model weights
 or opening devices. These checks establish repository readiness for review, not
 physical microphone or edge-device validation.
+
+
+## Phase 3A.1 integrated annotated preview
+
+For subsequent validation after review (not a request to run hardware now):
+
+```powershell
+uv run --extra voice --extra detection --extra appearance --extra identity jake-voice --config config/local.toml --with-camera --preview
+```
+
+`--preview` requires `--with-camera`; argparse rejects it otherwise before opening
+models or devices. Without `--preview`, integrated voice remains headless.
+
+The existing camera worker publishes one latest immutable frame/track/context snapshot.
+The main thread renders it using OpenCV and the existing person-box drawing helper.
+There is exactly one camera and one visual pipeline; rendering performs no detection,
+tracking or recognition. Slow rendering skips intermediate snapshots instead of
+queueing frames. Camera and voice workers never wait for rendering; the snapshot
+lock is held only to exchange a reference. No audio, VAD, STT, TTS, greeting or store
+behavior changes. Frames are memory-only and released at shutdown; no screenshot or
+recording feature is present.
+
+The window shows visible person boxes and track IDs, resident name/state or visitor
+short ID/state, actual delivered frame dimensions, sequence and processing FPS.
+Processing FPS is the reciprocal of the visual pipeline processing time, excluding
+camera acquisition, preview rendering and audio processing; it is not delivered FPS.
+
+The header displays, for example, `VOICE CONTEXT: Joseph | RESIDENT | track=4`.
+It uses the exact metadata snapshot sent to the voice bridge and the existing
+association function, recalculating freshness on each redraw. Multiple visible
+people, tentative-only or stale/future snapshots display `VOICE CONTEXT: unresolved`.
+Visitor/unknown context is labeled accordingly. This is available visual context,
+not the currently speaking person's verified identity or an active session's binding.
+The window explicitly labels this limitation; there is no acoustic identification.
+
+Lowercase `q` or uppercase `Q` stops the complete integrated session, releases the
+camera and audio resources and destroys the preview window. Ctrl+C follows the same
+cleanup path. Native model calls still finish cooperatively as described above.
+
+Regression tests fake HighGUI, devices and models. They cover argument validation,
+one-session snapshot reuse, resident/visitor/unknown/ambiguous/stale labels, both quit
+keys, Ctrl+C cleanup, immutable frame rendering and continued VAD/STT/TTS processing
+while a renderer is deliberately blocked. No physical camera/audio test was performed.

@@ -23,8 +23,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="Run existing perception on a separate worker for conservative visual association",
     )
+    parser.add_argument("--preview", action="store_true", help="Show annotated camera preview")
     args = parser.parse_args(argv)
+    if args.preview and not args.with_camera:
+        parser.error("--preview requires --with-camera")
     voice = camera = None
+    display = None
     try:
         if args.list_devices:
             from jake.adapters.sounddevice_audio import devices
@@ -44,16 +48,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.with_camera:
             from jake.application.voice_camera import VoiceCamera
 
-            camera = VoiceCamera(config, voice)
+            camera = VoiceCamera(config, voice, preview=args.preview)
+            if args.preview:
+                from jake.voice_preview import VoicePreview
+
+                display = VoicePreview(config.interaction.visual_context_max_age_seconds)
             camera.start()
         print("Jake voice active locally; half-duplex. Ctrl+C stops. No transcript logging.")
         delay = Event()
         previous = None
-        while not delay.wait(0.25):
+        while not delay.wait(0.01 if display else 0.25):
             if voice.metrics.input_status.startswith("failed") or camera and camera.error:
                 raise VoiceError(
                     "Local voice/camera worker failed; check runtime and device configuration"
                 )
+            if (
+                display is not None
+                and camera is not None
+                and not display.update(camera.preview_snapshot())
+            ):
+                break
+            if camera is not None and camera.finished.is_set():
+                break
             metrics = voice.metrics
             if metrics != previous:
                 print(
@@ -84,6 +100,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         finally:
             if camera is not None:
                 camera.close()
+            if display is not None:
+                display.close()
     return 0
 
 

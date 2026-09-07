@@ -358,7 +358,10 @@ def test_disabled_composition_never_loads_models(monkeypatch: pytest.MonkeyPatch
         compose_voice(config)
 
 
-def test_integrated_camera_publishes_only_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("preview", [False, True])
+def test_integrated_camera_publishes_only_metadata(
+    monkeypatch: pytest.MonkeyPatch, preview: bool
+) -> None:
     from unittest.mock import MagicMock
 
     from jake.application.composition import Components
@@ -375,10 +378,20 @@ def test_integrated_camera_publishes_only_metadata(monkeypatch: pytest.MonkeyPat
     source.__enter__.return_value = [frame]
     monkeypatch.setattr("jake.adapters.opencv_camera.OpenCVCamera", Mock(return_value=source))
     voice = Mock()
-    camera = VoiceCamera(AppConfig(PipelineConfig("test")), voice)
+    camera = VoiceCamera(AppConfig(PipelineConfig("test")), voice, preview=preview)
     camera.start()
     until(lambda: voice.publish.called)
+    assert camera.finished.wait(2)
+    image = camera.preview_snapshot()
+    assert (image is not None) == preview
+    if image is not None:
+        assert image.frame is frame
+        assert image.context is voice.publish.call_args.args[0]
+    detector.detect.assert_called_once()
+    tracker.update.assert_called_once()
+    compose.assert_called_once()
     camera.close()
+    assert camera.preview_snapshot() is None
     assert camera.error is None
     snapshot = voice.publish.call_args.args[0]
     assert isinstance(snapshot, VisualContext)
@@ -455,3 +468,62 @@ def test_cli_shutdown_with_camera(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
 def test_audio_chunk_contract_rejects_invalid_pcm(data: bytes) -> None:
     with pytest.raises(ValueError):
         AudioChunk(0, NOW, data)
+
+
+def test_audio_pipeline_progresses_while_preview_is_blocked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from threading import Thread
+
+    from jake.application.voice_camera import VoicePreviewSnapshot
+    from jake.domain import Frame
+    from jake.voice_preview import VoicePreview
+
+    entered, release, played = Event(), Event(), Event()
+
+    def render(*args: object) -> None:
+        entered.set()
+        release.wait(3)
+
+    for name in ("namedWindow", "destroyWindow"):
+        monkeypatch.setattr(f"jake.voice_preview.cv2.{name}", Mock())
+    monkeypatch.setattr("jake.voice_preview.cv2.imshow", render)
+    monkeypatch.setattr("jake.voice_preview.cv2.waitKey", Mock(return_value=-1))
+    source = Input()
+    recognizer = Mock(transcribe=Mock(return_value=result("hello", datetime.now(UTC))))
+    synthesizer = Mock(synthesize=Mock(return_value=SpeechResult(bytes(320), 16000, 2)))
+    service = VoiceService(
+        AudioConfig(enabled=True),
+        SpeechConfig(minimum_speech_ms=60, silence_timeout_ms=60, pre_roll_ms=0),
+        InteractionConfig(),
+        source,
+        VAD(),
+        recognizer,
+        synthesizer,
+        Mock(play=lambda audio, cancel: played.set()),
+    )
+    display = VoicePreview(2)
+    snapshot = VoicePreviewSnapshot(
+        Frame("test", 0, NOW, 1, 1, b"abc"),
+        (),
+        VisualContext(NOW, ()),
+        30,
+    )
+    renderer = Thread(target=display.update, args=(snapshot,))
+    service.start()
+    renderer.start()
+    try:
+        assert entered.wait(2)
+        at = datetime.now(UTC)
+        for i, speech in enumerate((True, True, False, False)):
+            source.queue.put(chunk(i, speech, at))
+        assert played.wait(2)
+        assert renderer.is_alive()
+        recognizer.transcribe.assert_called_once()
+        synthesizer.synthesize.assert_called_once()
+    finally:
+        release.set()
+        renderer.join(3)
+        service.close()
+        display.close()
+    assert source.closed
